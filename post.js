@@ -1,37 +1,15 @@
-process.env.BAILEYS_NO_LOG = 'true'; // ✅ Nonaktifkan log internal Baileys
+process.env.BAILEYS_NO_LOG = 'true';
 
-const {
-    default: makeWASocket,
-    useMultiFileAuthState,
-    fetchLatestBaileysVersion,
-    DisconnectReason
-} = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
-const readline = require('readline');
-const pino = require('pino'); // ✅ Tambahkan pino logger
+const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys');
+const pino = require('pino');
 
-// Fungsi input multi-line dari terminal (CTRL+D untuk selesai)
-function inputMultiline(promptText) {
-    console.log(promptText);
-    return new Promise(resolve => {
-        let input = '';
-        const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-            terminal: true
-        });
+const OWNER_NUMBER = 628975539822@s.whatsapp.net'; // Ganti dengan nomor kamu (pakai @s.whatsapp.net)
 
-        rl.on('line', (line) => {
-            input += line + '\n';
-        });
+let currentText = '';
+let currentIntervalMs = 5 * 60 * 1000;
+let broadcastActive = false;
+let broadcastInterval;
 
-        rl.on('close', () => {
-            resolve(input.trim());
-        });
-    });
-}
-
-// Parsing waktu dari string seperti "5m", "30s", "1h"
 function parseInterval(text) {
     const match = text.match(/^(\d+)(s|m|h)$/i);
     if (!match) return null;
@@ -45,29 +23,66 @@ function parseInterval(text) {
     }
 }
 
-// Fungsi delay
-function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+function humanInterval(ms) {
+    if (ms < 60000) return `${ms / 1000}s`;
+    if (ms < 3600000) return `${ms / 60000}m`;
+    return `${ms / 3600000}h`;
 }
 
-// Variasi teks (anti-spam)
-function variateText(teksDasar) {
-    const emojis = ['✨', '🔥', '💬', '✅', '📌', '🧠', '🚀', '🎯'];
+function variateText(base) {
+    const emojis = ['✨', '🔥', '✅', '📌', '🧠', '🚀', '🎯'];
     const zwsp = '\u200B';
-    const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
-    const pola = Math.floor(Math.random() * 4);
+    const randEmoji = emojis[Math.floor(Math.random() * emojis.length)];
+    const rand = Math.floor(Math.random() * 4);
+    switch (rand) {
+        case 0: return base + " " + randEmoji;
+        case 1: return base.replace(/,/g, `${randEmoji},`);
+        case 2: return base.replace(/\s/g, m => m + (Math.random() > 0.7 ? zwsp : ""));
+        case 3: return base.slice(0, 5) + randEmoji + base.slice(5);
+        default: return base;
+    }
+}
 
-    switch (pola) {
-        case 0:
-            return teksDasar + " " + randomEmoji;
-        case 1:
-            return teksDasar.replace(/,/g, `${randomEmoji},`);
-        case 2:
-            return teksDasar.replace(/\s/g, match => match + (Math.random() > 0.7 ? zwsp : ""));
-        case 3:
-            return teksDasar.slice(0, 5) + randomEmoji + teksDasar.slice(5);
-        default:
-            return teksDasar;
+function delay(ms) {
+    return new Promise(res => setTimeout(res, ms));
+}
+
+async function kirimBroadcast(sock) {
+    if (!currentText || !currentIntervalMs) return;
+
+    const groupsData = await sock.groupFetchAllParticipating();
+    const groupIds = Object.keys(groupsData);
+
+    let success = 0;
+    let failed = 0;
+    let locked = [];
+
+    for (const gid of groupIds) {
+        const info = groupsData[gid];
+        if (info.announce) {
+            locked.push(`🔒 ${info.subject}`);
+            continue;
+        }
+
+        try {
+            await sock.sendMessage(gid, { text: variateText(currentText) });
+            success++;
+        } catch (err) {
+            failed++;
+        }
+
+        await delay(Math.random() * 3000 + 1500);
+    }
+
+    let report = `📢 Laporan Broadcast:\n\n✅ Terkirim: ${success}\n❌ Gagal: ${failed}\n🔒 Grup Terkunci: ${locked.length}`;
+    if (locked.length > 0) {
+        report += `\n\n${locked.join('\n')}`;
+    }
+
+    try {
+        await sock.sendMessage(OWNER_NUMBER, { text: report });
+    } catch (err) {
+        console.log('❌ Gagal kirim laporan ke owner:', err.message);
     }
 }
 
@@ -78,74 +93,69 @@ async function startBot() {
     const sock = makeWASocket({
         version,
         auth: state,
-        logger: pino({ level: 'silent' }) // ✅ Gunakan pino dan nonaktifkan log internal
+        logger: pino({ level: 'silent' })
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            console.log('\n📱 Scan QR berikut untuk login:');
-            qrcode.generate(qr, { small: true });
-        }
-
+    sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
         if (connection === 'open') {
-            console.log('\n✅ Terhubung ke WhatsApp!');
-
-            const teksDasar = await inputMultiline('📨 Masukkan teks yang ingin dikirim (multi-line didukung)\n(Ketik/paste teks lalu tekan CTRL+D jika selesai)');
-            const intervalInput = await inputMultiline('⏱️ Masukkan interval kirim pesan (misal: 30s, 5m, 1h):');
-            const intervalMs = parseInterval(intervalInput);
-
-            if (!intervalMs) {
-                console.log('❌ Format interval salah. Gunakan contoh: 30s, 5m, atau 1h');
-                process.exit(0);
-            }
-
-            const allGroups = await sock.groupFetchAllParticipating();
-            const groupIds = Object.keys(allGroups);
-
-            if (groupIds.length === 0) {
-                console.log('⚠️ Bot tidak tergabung di grup manapun.');
-                process.exit(0);
-            }
-
-            console.log(`\n🔍 Ditemukan ${groupIds.length} grup`);
-            groupIds.forEach(gid => {
-                console.log(`🕵️ Kirim ke: ${gid} (${allGroups[gid].subject})`);
-            });
-
-            const kirimPesanKeSemuaGrup = async () => {
-                console.log(`\n🚀 Mulai kirim @ ${new Date().toLocaleTimeString()}`);
-                for (const groupId of groupIds) {
-                    const namaGrup = allGroups[groupId].subject;
-                    const teksFinal = variateText(teksDasar);
-                    try {
-                        await sock.sendMessage(groupId, { text: teksFinal });
-                        console.log(`✅ [${namaGrup}] → SUKSES`);
-                    } catch (err) {
-                        console.log(`❌ [${namaGrup}] → GAGAL: ${err.message}`);
-                    }
-                    await delay(Math.random() * 3000 + 2000); // 2-5 detik antar grup
-                }
-            };
-
-            // Pertama kali kirim
-            await kirimPesanKeSemuaGrup();
-
-            // Ulangi tiap interval
-            setInterval(kirimPesanKeSemuaGrup, intervalMs);
+            console.log('✅ Bot aktif dan siap menerima perintah WA Owner');
+            await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah dari owner.' });
         }
 
         if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('❌ Koneksi terputus. Reconnect:', shouldReconnect);
+            const reason = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = reason !== DisconnectReason.loggedOut;
+            console.log('❌ Terputus. Reconnect:', shouldReconnect);
             if (shouldReconnect) {
                 startBot();
             } else {
                 process.exit(1);
             }
+        }
+    });
+
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        const msg = messages[0];
+        if (!msg.message || msg.key.fromMe || msg.key.remoteJid !== OWNER_NUMBER) return;
+
+        const teks = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+        if (teks.startsWith('.settext ')) {
+            currentText = teks.slice(9).trim();
+            await sock.sendMessage(OWNER_NUMBER, { text: '✅ Pesan broadcast disimpan.' });
+        } else if (teks.startsWith('.setinterval ')) {
+            const parsed = parseInterval(teks.slice(13).trim());
+            if (!parsed) {
+                await sock.sendMessage(OWNER_NUMBER, { text: '❌ Format salah. Contoh: .setinterval 5m' });
+            } else {
+                currentIntervalMs = parsed;
+                await sock.sendMessage(OWNER_NUMBER, { text: `✅ Interval diatur: ${teks.slice(13).trim()}` });
+            }
+        } else if (teks === '.start') {
+            if (!currentText) {
+                return await sock.sendMessage(OWNER_NUMBER, { text: '❌ Gunakan `.settext` terlebih dahulu.' });
+            }
+            if (broadcastActive) {
+                return await sock.sendMessage(OWNER_NUMBER, { text: '❌ Broadcast sudah berjalan.' });
+            }
+            broadcastActive = true;
+            await sock.sendMessage(OWNER_NUMBER, { text: `🚀 Broadcast dimulai. Interval: ${humanInterval(currentIntervalMs)}` });
+            await kirimBroadcast(sock);
+            broadcastInterval = setInterval(() => kirimBroadcast(sock), currentIntervalMs);
+        } else if (teks === '.stop') {
+            if (!broadcastActive) {
+                return await sock.sendMessage(OWNER_NUMBER, { text: '❌ Broadcast belum berjalan.' });
+            }
+            clearInterval(broadcastInterval);
+            broadcastActive = false;
+            await sock.sendMessage(OWNER_NUMBER, { text: '🛑 Broadcast dihentikan.' });
+        } else if (teks === '.status') {
+            let statusMsg = `📊 Status Broadcast:\n\n`;
+            statusMsg += `📍 Aktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\n`;
+            statusMsg += `🕒 Interval: ${humanInterval(currentIntervalMs)}\n`;
+            statusMsg += `📄 Isi Pesan:\n${currentText ? currentText : '⚠️ Belum diset!'}`;
+            await sock.sendMessage(OWNER_NUMBER, { text: statusMsg });
         }
     });
 }
