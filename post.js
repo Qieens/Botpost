@@ -3,7 +3,7 @@ process.env.BAILEYS_NO_LOG = 'true';
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 
-const OWNER_NUMBER = 628975539822@s.whatsapp.net'; // Ganti dengan nomor kamu (pakai @s.whatsapp.net)
+const OWNER_NUMBER = '628975539822@s.whatsapp.net'; // Ganti dengan nomor kamu (pakai @s.whatsapp.net)
 
 let currentText = '';
 let currentIntervalMs = 5 * 60 * 1000;
