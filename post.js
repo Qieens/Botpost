@@ -76,9 +76,9 @@ async function startBot() {
         const { connection, lastDisconnect } = update;
 
         // ✅ Cetak QR dengan qrcode-terminal
-        if (update.qr) {
+        if (qr) {
             console.log('\n📱 Scan QR berikut untuk login:');
-            qrcode.generate(update.qr, { small: true });
+            qrcode.generate(qr, { small: true });
         }
 
         if (connection === 'open') {
