@@ -7,7 +7,18 @@ const {
 const qrcode = require('qrcode-terminal');
 const readline = require('readline');
 
-// Fungsi input dari terminal
+// Fungsi input multi-line
+function inputMultiline(promptText) {
+    return new Promise((resolve) => {
+        console.log(promptText + '\n(Ketik/paste teks lalu tekan CTRL+D jika selesai)\n');
+        let input = '';
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', chunk => input += chunk);
+        process.stdin.on('end', () => resolve(input.trim()));
+    });
+}
+
+// Fungsi input satu baris
 function inputTerminal(promptText) {
     return new Promise((resolve) => {
         const rl = readline.createInterface({
@@ -21,7 +32,7 @@ function inputTerminal(promptText) {
     });
 }
 
-// Fungsi parsing waktu (contoh: 5m, 30s, 1h)
+// Parse durasi (misal 5m, 30s, 1h)
 function parseInterval(text) {
     const match = text.match(/^(\d+)(s|m|h)$/i);
     if (!match) return null;
@@ -35,12 +46,12 @@ function parseInterval(text) {
     }
 }
 
-// Fungsi delay
+// Delay
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Fungsi variasi teks anti-spam
+// Variasi teks anti-spam
 function variateText(teksDasar) {
     const emojis = ['✨', '🔥', '💬', '✅', '📌', '🧠', '🚀', '🎯'];
     const zwsp = '\u200B'; // zero-width space
@@ -61,35 +72,35 @@ function variateText(teksDasar) {
     }
 }
 
+// Mulai bot
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('session');
     const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
         version,
-        auth: state // ✅ tanpa printQRInTerminal
+        auth: state
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update; // ✅ tambahkan qr di sini
+        const { connection, lastDisconnect, qr } = update;
 
-        // ✅ Cetak QR dengan qrcode-terminal
         if (qr) {
-            console.log('\n📱 Scan QR berikut untuk login:');
+            console.log('\n📱 Scan QR berikut untuk login:\n');
             qrcode.generate(qr, { small: true });
         }
 
         if (connection === 'open') {
             console.log('\n✅ Terhubung ke WhatsApp!\n');
 
-            const teksDasar = await inputTerminal('📨 Masukkan teks yang ingin dikirim:\n> ');
-            const intervalInput = await inputTerminal('⏱️ Masukkan interval kirim pesan (contoh: 5m, 30s, 1h):\n> ');
+            const teksDasar = await inputMultiline('📨 Masukkan teks yang ingin dikirim (multi-line didukung)');
+            const intervalInput = await inputTerminal('⏱️ Masukkan interval kirim pesan (misal: 30s, 5m, 1h):\n> ');
             const intervalMs = parseInterval(intervalInput);
 
             if (!intervalMs) {
-                console.log('❌ Format interval salah. Gunakan contoh: 30s, 5m, atau 1h');
+                console.log('❌ Format interval salah. Gunakan contoh: 30s, 5m, 1h');
                 process.exit(0);
             }
 
@@ -104,20 +115,20 @@ async function startBot() {
             console.log(`\n📡 Siap mengirim ke ${groupIds.length} grup setiap ${intervalInput}...\n`);
 
             const kirimPesanKeSemuaGrup = async () => {
-                console.log(`\n🚀 Mulai kirim @ ${new Date().toLocaleTimeString()}`);
+                console.log(`\n🚀 Kirim pesan @ ${new Date().toLocaleTimeString()}`);
                 for (const groupId of groupIds) {
                     const namaGrup = allGroups[groupId].subject;
                     const teksFinal = variateText(teksDasar);
                     await sock.sendMessage(groupId, { text: teksFinal });
                     console.log(`✅ [${namaGrup}] → ${teksFinal}`);
-                    await delay(Math.random() * 3000 + 2000); // jeda 2-5 detik antar grup
+                    await delay(Math.random() * 3000 + 2000); // jeda antar grup
                 }
             };
 
             // Kirim pertama kali
             await kirimPesanKeSemuaGrup();
 
-            // Ulangi setiap interval
+            // Kirim ulang sesuai interval
             setInterval(kirimPesanKeSemuaGrup, intervalMs);
         }
 
