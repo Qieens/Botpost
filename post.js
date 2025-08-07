@@ -6,7 +6,7 @@ const qrcode = require('qrcode-terminal')
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
 
 // ====== KONFIGURASI ======
-const OWNER_NUMBER = '628975539822@s.whatsapp.net'
+const OWNER_NUMBER ='628975539822@s.whatsapp.net'
 const CONFIG_PATH = './config.json'
 
 // ====== LOAD / SIMPAN CONFIG ======
