@@ -167,14 +167,22 @@ const startBot = async () => {
     }
 
     if (teks.startsWith('.join ')) {
-  const link = teks.split(' ')[1]
-  if (!link || !link.includes('chat.whatsapp.com')) return reply('❌ Link tidak valid.')
-  const code = link.trim().split('/').pop().split('?')[0] // ⬅ FIX: ambil hanya kode sebelum tanda ?
-  try {
-    await sock.groupAcceptInvite(code)
-    reply('✅ Berhasil join grup.')
-  } catch {
-    reply('❌ Gagal join. Mungkin link kadaluarsa atau bot diblokir admin.')
+  const delay = ms => new Promise(res => setTimeout(res, ms))
+  const links = teks.split(/\s+/).filter(l => l.includes('chat.whatsapp.com'))
+  
+  if (links.length === 0) {
+    return sock.sendMessage(OWNER_NUMBER, { text: '❌ Tidak ada link grup yang valid.' })
+  }
+
+  for (const link of links) {
+    const code = link.trim().split('/').pop().split('?')[0] // ambil kode undangan
+    try {
+      await sock.groupAcceptInvite(code)
+      await sock.sendMessage(OWNER_NUMBER, { text: `✅ Berhasil join grup dari link:\n${link}` })
+    } catch {
+      await sock.sendMessage(OWNER_NUMBER, { text: `❌ Gagal join grup dari link:\n${link}` })
+    }
+    await delay(3000) // jeda 3 detik antar join
   }
 }
     
