@@ -1,3 +1,5 @@
+process.env.BAILEYS_NO_LOG = 'true'; // ✅ Nonaktifkan log internal Baileys
+
 const {
     default: makeWASocket,
     useMultiFileAuthState,
@@ -7,32 +9,28 @@ const {
 const qrcode = require('qrcode-terminal');
 const readline = require('readline');
 
-// Fungsi input multi-line
+// Fungsi input multi-line dari terminal (CTRL+D untuk selesai)
 function inputMultiline(promptText) {
-    return new Promise((resolve) => {
-        console.log(promptText + '\n(Ketik/paste teks lalu tekan CTRL+D jika selesai)\n');
+    console.log(promptText);
+    return new Promise(resolve => {
         let input = '';
-        process.stdin.setEncoding('utf8');
-        process.stdin.on('data', chunk => input += chunk);
-        process.stdin.on('end', () => resolve(input.trim()));
-    });
-}
-
-// Fungsi input satu baris
-function inputTerminal(promptText) {
-    return new Promise((resolve) => {
         const rl = readline.createInterface({
             input: process.stdin,
-            output: process.stdout
+            output: process.stdout,
+            terminal: true
         });
-        rl.question(promptText, (answer) => {
-            rl.close();
-            resolve(answer.trim());
+
+        rl.on('line', (line) => {
+            input += line + '\n';
+        });
+
+        rl.on('close', () => {
+            resolve(input.trim());
         });
     });
 }
 
-// Parse durasi (misal 5m, 30s, 1h)
+// Parsing waktu dari string seperti "5m", "30s", "1h"
 function parseInterval(text) {
     const match = text.match(/^(\d+)(s|m|h)$/i);
     if (!match) return null;
@@ -46,15 +44,15 @@ function parseInterval(text) {
     }
 }
 
-// Delay
+// Fungsi delay
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Variasi teks anti-spam
+// Variasi teks (anti-spam)
 function variateText(teksDasar) {
     const emojis = ['✨', '🔥', '💬', '✅', '📌', '🧠', '🚀', '🎯'];
-    const zwsp = '\u200B'; // zero-width space
+    const zwsp = '\u200B';
     const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
     const pola = Math.floor(Math.random() * 4);
 
@@ -72,14 +70,21 @@ function variateText(teksDasar) {
     }
 }
 
-// Mulai bot
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('session');
     const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
         version,
-        auth: state
+        auth: state,
+        logger: {
+            info: () => {},
+            warn: () => {},
+            error: () => {},
+            debug: () => {},
+            trace: () => {},
+            fatal: () => {},
+        }
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -88,19 +93,19 @@ async function startBot() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('\n📱 Scan QR berikut untuk login:\n');
+            console.log('\n📱 Scan QR berikut untuk login:');
             qrcode.generate(qr, { small: true });
         }
 
         if (connection === 'open') {
-            console.log('\n✅ Terhubung ke WhatsApp!\n');
+            console.log('\n✅ Terhubung ke WhatsApp!');
 
-            const teksDasar = await inputMultiline('📨 Masukkan teks yang ingin dikirim (multi-line didukung)');
-            const intervalInput = await inputTerminal('⏱️ Masukkan interval kirim pesan (misal: 30s, 5m, 1h):\n> ');
+            const teksDasar = await inputMultiline('📨 Masukkan teks yang ingin dikirim (multi-line didukung)\n(Ketik/paste teks lalu tekan CTRL+D jika selesai)');
+            const intervalInput = await inputMultiline('⏱️ Masukkan interval kirim pesan (misal: 30s, 5m, 1h):');
             const intervalMs = parseInterval(intervalInput);
 
             if (!intervalMs) {
-                console.log('❌ Format interval salah. Gunakan contoh: 30s, 5m, 1h');
+                console.log('❌ Format interval salah. Gunakan contoh: 30s, 5m, atau 1h');
                 process.exit(0);
             }
 
@@ -112,23 +117,30 @@ async function startBot() {
                 process.exit(0);
             }
 
-            console.log(`\n📡 Siap mengirim ke ${groupIds.length} grup setiap ${intervalInput}...\n`);
+            console.log(`\n🔍 Ditemukan ${groupIds.length} grup`);
+            groupIds.forEach(gid => {
+                console.log(`🕵️ Kirim ke: ${gid} (${allGroups[gid].subject})`);
+            });
 
             const kirimPesanKeSemuaGrup = async () => {
-                console.log(`\n🚀 Kirim pesan @ ${new Date().toLocaleTimeString()}`);
+                console.log(`\n🚀 Mulai kirim @ ${new Date().toLocaleTimeString()}`);
                 for (const groupId of groupIds) {
                     const namaGrup = allGroups[groupId].subject;
                     const teksFinal = variateText(teksDasar);
-                    await sock.sendMessage(groupId, { text: teksFinal });
-                    console.log(`✅ [${namaGrup}] → ${teksFinal}`);
-                    await delay(Math.random() * 3000 + 2000); // jeda antar grup
+                    try {
+                        await sock.sendMessage(groupId, { text: teksFinal });
+                        console.log(`✅ [${namaGrup}] → SUKSES`);
+                    } catch (err) {
+                        console.log(`❌ [${namaGrup}] → GAGAL: ${err.message}`);
+                    }
+                    await delay(Math.random() * 3000 + 2000); // 2-5 detik antar grup
                 }
             };
 
-            // Kirim pertama kali
+            // Pertama kali kirim
             await kirimPesanKeSemuaGrup();
 
-            // Kirim ulang sesuai interval
+            // Ulangi tiap interval
             setInterval(kirimPesanKeSemuaGrup, intervalMs);
         }
 
