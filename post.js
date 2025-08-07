@@ -3,6 +3,7 @@ process.env.BAILEYS_NO_LOG = 'true'
 const fs = require('fs')
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
 const pino = require('pino')
+const qrcode = require('qrcode-terminal')
 
 const OWNER_NUMBER = '628975539822@s.whatsapp.net' // Ganti dengan nomor kamu
 const CONFIG_PATH = './config.json'
@@ -95,7 +96,9 @@ const startBot = async () => {
 
   sock.ev.on('creds.update', saveCreds)
 
-  sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
+  sock.ev.on('connection.update', async ({ qr, connection, lastDisconnect }) => {
+      if (qr) {
+      qrcode.generate(qr, { small: true })
     if (connection === 'open') {
       console.log('✅ Bot aktif')
       await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
