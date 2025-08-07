@@ -6,6 +6,7 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const readline = require('readline');
+const qrcode = require('qrcode-terminal');
 
 // Fungsi input dari terminal
 function inputTerminal(promptText) {
@@ -75,7 +76,9 @@ async function startBot() {
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
-
+         console.log('\n📱 Scan QR berikut untuk login:');
+        
+            qrcode.generate(qr, { small: true });
         if (connection === 'open') {
             console.log('\n✅ Terhubung ke WhatsApp!\n');
 
