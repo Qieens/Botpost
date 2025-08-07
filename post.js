@@ -6,7 +6,7 @@ const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion,
 const pino = require('pino')
 
 // Constants
-const OWNER_NUMBER = '628XXXXXX@s.whatsapp.net' // Ganti dengan nomor kamu
+const OWNER_NUMBER = '628975539822@s.whatsapp.net' // Ganti dengan nomor kamu
 
 // State Variables
 let currentText = ''
