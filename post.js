@@ -5,7 +5,7 @@ const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion,
 const pino = require('pino')
 const qrcode = require('qrcode-terminal')
 
-const OWNER_NUMBER = '628975539822@s.whatsapp.net' // Ganti dengan nomor kamu
+const OWNER_NUMBER = '628975539822@s.whatsapp.net' // Nomor owner format JID
 const CONFIG_PATH = './config.json'
 
 let config = { currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false }
@@ -91,32 +91,33 @@ const startBot = async () => {
     version,
     auth: state,
     logger: pino({ level: 'silent' }),
-    shouldIgnoreJid: jid => jid !== OWNER_NUMBER // Hanya baca pesan dari owner
+    // Pastikan hanya proses pesan dari owner
+    shouldIgnoreJid: jid => jid !== OWNER_NUMBER
   })
 
   sock.ev.on('creds.update', saveCreds)
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-        try {
-            console.clear()
-            console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR berikut untuk menghubungkan bot:\n`)
-            qrcode.generate(qr, { small: true })
-            console.log('\n💡 Gunakan WhatsApp untuk scan QR ini. QR akan berganti jika tidak discan dalam 1 menit.')
-        } catch (err) {
-            console.error('❌ Gagal menampilkan QR:', err.message)
-        }
+      try {
+        console.clear()
+        console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR berikut untuk menghubungkan bot:\n`)
+        qrcode.generate(qr, { small: true })
+        console.log('\n💡 Gunakan WhatsApp untuk scan QR ini. QR akan berganti jika tidak discan dalam 1 menit.')
+      } catch (err) {
+        console.error('❌ Gagal menampilkan QR:', err.message)
+      }
     }
 
     if (connection === 'open') {
-        console.log('✅ Bot aktif')
-        await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
+      console.log('✅ Bot aktif')
+      await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
 
-        if (broadcastActive) {
-            await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
-            await kirimBroadcast(sock)
-            startBroadcastLoop(sock)
-        }
+      if (broadcastActive) {
+        await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
+        await kirimBroadcast(sock)
+        startBroadcastLoop(sock)
+      }
     }
 
     if (connection === 'close') {
@@ -179,25 +180,23 @@ const startBot = async () => {
     }
 
     if (teks.startsWith('.join ')) {
-  const delay = ms => new Promise(res => setTimeout(res, ms))
-  const links = teks.split(/\s+/).filter(l => l.includes('chat.whatsapp.com'))
-  
-  if (links.length === 0) {
-    return sock.sendMessage(OWNER_NUMBER, { text: '❌ Tidak ada link grup yang valid.' })
-  }
+      const links = teks.split(/\s+/).filter(l => l.includes('chat.whatsapp.com'))
 
-  for (const link of links) {
-    const code = link.trim().split('/').pop().split('?')[0] // ambil kode undangan
-    try {
-      await sock.groupAcceptInvite(code)
-      await sock.sendMessage(OWNER_NUMBER, { text: `✅ Berhasil join grup dari link:\n${link}` })
-    } catch {
-      await sock.sendMessage(OWNER_NUMBER, { text: `❌ Gagal join grup dari link:\n${link}` })
+      if (links.length === 0) {
+        return reply('❌ Tidak ada link grup yang valid.')
+      }
+
+      for (const link of links) {
+        const code = link.trim().split('/').pop().split('?')[0]
+        try {
+          await sock.groupAcceptInvite(code)
+          await reply(`✅ Berhasil join grup dari link:\n${link}`)
+        } catch {
+          await reply(`❌ Gagal join grup dari link:\n${link}`)
+        }
+        await delay(3000)
+      }
     }
-    await delay(3000) // jeda 3 detik antar join
-  }
-}
-    
   })
 }
 
