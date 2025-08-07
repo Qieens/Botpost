@@ -4,9 +4,8 @@ const {
     fetchLatestBaileysVersion,
     DisconnectReason
 } = require('@whiskeysockets/baileys');
-
+const qrcode = require('qrcode-terminal'); // ✅ Tambahkan ini
 const readline = require('readline');
-const qrcode = require('qrcode-terminal');
 
 // Fungsi input dari terminal
 function inputTerminal(promptText) {
@@ -68,17 +67,20 @@ async function startBot() {
 
     const sock = makeWASocket({
         version,
-        printQRInTerminal: true,
-        auth: state
+        auth: state // ❌ Jangan pakai printQRInTerminal
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
-         console.log('\n📱 Scan QR berikut untuk login:');
-        
-            qrcode.generate(qr, { small: true });
+
+        // ✅ Cetak QR dengan qrcode-terminal
+        if (update.qr) {
+            console.log('\n📱 Scan QR berikut untuk login:');
+            qrcode.generate(update.qr, { small: true });
+        }
+
         if (connection === 'open') {
             console.log('\n✅ Terhubung ke WhatsApp!\n');
 
