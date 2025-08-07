@@ -167,16 +167,17 @@ const startBot = async () => {
     }
 
     if (teks.startsWith('.join ')) {
-      const link = teks.split(' ')[1]
-      if (!link || !link.includes('chat.whatsapp.com')) return reply('❌ Link tidak valid.')
-      const code = link.trim().split('/').pop()
-      try {
-        await sock.groupAcceptInvite(code)
-        reply('✅ Berhasil join grup.')
-      } catch {
-        reply('❌ Gagal join. Mungkin link kadaluarsa.')
-      }
-    }
+  const link = teks.split(' ')[1]
+  if (!link || !link.includes('chat.whatsapp.com')) return reply('❌ Link tidak valid.')
+  const code = link.trim().split('/').pop().split('?')[0] // ⬅ FIX: ambil hanya kode sebelum tanda ?
+  try {
+    await sock.groupAcceptInvite(code)
+    reply('✅ Berhasil join grup.')
+  } catch {
+    reply('❌ Gagal join. Mungkin link kadaluarsa atau bot diblokir admin.')
+  }
+}
+    
   })
 }
 
