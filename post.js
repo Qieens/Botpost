@@ -4,7 +4,7 @@ const {
     fetchLatestBaileysVersion,
     DisconnectReason
 } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal'); // ✅ Tambahkan ini
+const qrcode = require('qrcode-terminal');
 const readline = require('readline');
 
 // Fungsi input dari terminal
@@ -25,7 +25,7 @@ function inputTerminal(promptText) {
 function parseInterval(text) {
     const match = text.match(/^(\d+)(s|m|h)$/i);
     if (!match) return null;
-    const [ , value, unit ] = match;
+    const [, value, unit] = match;
     const num = parseInt(value);
     switch (unit.toLowerCase()) {
         case 's': return num * 1000;
@@ -67,13 +67,13 @@ async function startBot() {
 
     const sock = makeWASocket({
         version,
-        auth: state // ❌ Jangan pakai printQRInTerminal
+        auth: state // ✅ tanpa printQRInTerminal
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update; // ✅ tambahkan qr di sini
 
         // ✅ Cetak QR dengan qrcode-terminal
         if (qr) {
