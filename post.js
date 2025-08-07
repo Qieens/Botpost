@@ -8,6 +8,7 @@ const {
 } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const readline = require('readline');
+const pino = require('pino'); // ✅ Tambahkan pino logger
 
 // Fungsi input multi-line dari terminal (CTRL+D untuk selesai)
 function inputMultiline(promptText) {
@@ -77,14 +78,7 @@ async function startBot() {
     const sock = makeWASocket({
         version,
         auth: state,
-        logger: {
-            info: () => {},
-            warn: () => {},
-            error: () => {},
-            debug: () => {},
-            trace: () => {},
-            fatal: () => {},
-        }
+        logger: pino({ level: 'silent' }) // ✅ Gunakan pino dan nonaktifkan log internal
     });
 
     sock.ev.on('creds.update', saveCreds);
