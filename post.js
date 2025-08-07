@@ -1,24 +1,24 @@
 process.env.BAILEYS_NO_LOG = 'true'
 
 const fs = require('fs')
-const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
 const pino = require('pino')
 const qrcode = require('qrcode-terminal')
+const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
 
-const OWNER_NUMBER = '628975539822@s.whatsapp.net' // Nomor owner format JID
+// ====== KONFIGURASI ======
+const OWNER_NUMBER = '628975539822@s.whatsapp.net'
 const CONFIG_PATH = './config.json'
 
+// ====== LOAD / SIMPAN CONFIG ======
 let config = { currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false }
 if (fs.existsSync(CONFIG_PATH)) {
   try { config = JSON.parse(fs.readFileSync(CONFIG_PATH)) } catch {}
 }
 let { currentText, currentIntervalMs, broadcastActive } = config
 let broadcastInterval
+const saveConfig = () => fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive }, null, 2))
 
-const saveConfig = () => {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive }, null, 2))
-}
-
+// ====== FUNGSI UTIL ======
 const parseInterval = (text) => {
   const match = text.match(/^(\d+)(s|m|h)$/i)
   if (!match) return null
@@ -45,6 +45,7 @@ const variateText = (text) => {
 
 const delay = ms => new Promise(res => setTimeout(res, ms))
 
+// ====== BROADCAST ======
 const kirimBroadcast = async (sock) => {
   if (!currentText || !currentIntervalMs) return
 
@@ -83,6 +84,7 @@ const startBroadcastLoop = (sock) => {
   broadcastInterval = setInterval(() => kirimBroadcast(sock), currentIntervalMs)
 }
 
+// ====== START BOT ======
 const startBot = async () => {
   const { state, saveCreds } = await useMultiFileAuthState('session')
   const { version } = await fetchLatestBaileysVersion()
@@ -90,23 +92,17 @@ const startBot = async () => {
   const sock = makeWASocket({
     version,
     auth: state,
-    logger: pino({ level: 'silent' }),
-    // Pastikan hanya proses pesan dari owner
-    shouldIgnoreJid: jid => jid !== OWNER_NUMBER
+    logger: pino({ level: 'silent' })
   })
 
   sock.ev.on('creds.update', saveCreds)
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      try {
-        console.clear()
-        console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR berikut untuk menghubungkan bot:\n`)
-        qrcode.generate(qr, { small: true })
-        console.log('\n💡 Gunakan WhatsApp untuk scan QR ini. QR akan berganti jika tidak discan dalam 1 menit.')
-      } catch (err) {
-        console.error('❌ Gagal menampilkan QR:', err.message)
-      }
+      console.clear()
+      console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR berikut untuk menghubungkan bot:\n`)
+      qrcode.generate(qr, { small: true })
+      console.log('\n💡 Gunakan WhatsApp untuk scan QR ini.')
     }
 
     if (connection === 'open') {
@@ -131,9 +127,11 @@ const startBot = async () => {
     }
   })
 
+  // ====== HANDLE PESAN DARI OWNER SAJA ======
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
-    if (!msg.message || msg.key.fromMe || msg.key.remoteJid !== OWNER_NUMBER) return
+    if (!msg.message || msg.key.fromMe) return
+    if (msg.key.remoteJid !== OWNER_NUMBER) return
 
     const teks = msg.message.conversation || msg.message?.extendedTextMessage?.text || ''
     const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
@@ -182,9 +180,7 @@ const startBot = async () => {
     if (teks.startsWith('.join ')) {
       const links = teks.split(/\s+/).filter(l => l.includes('chat.whatsapp.com'))
 
-      if (links.length === 0) {
-        return reply('❌ Tidak ada link grup yang valid.')
-      }
+      if (links.length === 0) return reply('❌ Tidak ada link grup yang valid.')
 
       for (const link of links) {
         const code = link.trim().split('/').pop().split('?')[0]
