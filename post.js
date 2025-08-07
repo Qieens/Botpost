@@ -96,18 +96,27 @@ const startBot = async () => {
 
   sock.ev.on('creds.update', saveCreds)
 
-  sock.ev.on('connection.update', async ({ qr, connection, lastDisconnect }) => {
-      if (qr) {
-      qrcode.generate(qr, { small: true })
-    if (connection === 'open') {
-      console.log('✅ Bot aktif')
-      await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
+  sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+        try {
+            console.clear()
+            console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR berikut untuk menghubungkan bot:\n`)
+            qrcode.generate(qr, { small: true })
+            console.log('\n💡 Gunakan WhatsApp untuk scan QR ini. QR akan berganti jika tidak discan dalam 1 menit.')
+        } catch (err) {
+            console.error('❌ Gagal menampilkan QR:', err.message)
+        }
+    }
 
-      if (broadcastActive) {
-        await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
-        await kirimBroadcast(sock)
-        startBroadcastLoop(sock)
-      }
+    if (connection === 'open') {
+        console.log('✅ Bot aktif')
+        await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
+
+        if (broadcastActive) {
+            await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
+            await kirimBroadcast(sock)
+            startBroadcastLoop(sock)
+        }
     }
 
     if (connection === 'close') {
