@@ -1,25 +1,28 @@
-// ENV setup
 process.env.BAILEYS_NO_LOG = 'true'
 
-// Dependencies
+const fs = require('fs')
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
 const pino = require('pino')
 
-// Constants
 const OWNER_NUMBER = '628975539822@s.whatsapp.net' // Ganti dengan nomor kamu
+const CONFIG_PATH = './config.json'
 
-// State Variables
-let currentText = ''
-let currentIntervalMs = 5 * 60 * 1000
-let broadcastActive = false
+let config = { currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false }
+if (fs.existsSync(CONFIG_PATH)) {
+  try { config = JSON.parse(fs.readFileSync(CONFIG_PATH)) } catch {}
+}
+let { currentText, currentIntervalMs, broadcastActive } = config
 let broadcastInterval
 
-// Utilities
+const saveConfig = () => {
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive }, null, 2))
+}
+
 const parseInterval = (text) => {
-  const match = text.match(/^([0-9]+)(s|m|h)$/i)
+  const match = text.match(/^(\d+)(s|m|h)$/i)
   if (!match) return null
-  const [, value, unit] = match
-  const num = parseInt(value)
+  const [, val, unit] = match
+  const num = parseInt(val)
   return unit === 's' ? num * 1000 : unit === 'm' ? num * 60000 : num * 3600000
 }
 
@@ -29,21 +32,17 @@ const humanInterval = (ms) => {
   return `${ms / 3600000}h`
 }
 
-const variateText = (base) => {
-  const emojis = ['✨', '🔥', '✅', '📌', '🧠', '🚀', '🎯']
+const variateText = (text) => {
+  const emojis = ['✨', '✅', '🔥', '🚀', '📌', '🧠']
   const zwsp = '\u200B'
-  const randEmoji = emojis[Math.floor(Math.random() * emojis.length)]
-  const rand = Math.floor(Math.random() * 4)
-  switch (rand) {
-    case 0: return base + ' ' + randEmoji
-    case 1: return base.replace(/,/g, ',' + randEmoji)
-    case 2: return base.replace(/\s/g, m => m + (Math.random() > 0.7 ? zwsp : ''))
-    case 3: return base.slice(0, 5) + randEmoji + base.slice(5)
-    default: return base
-  }
+  const emoji = emojis[Math.floor(Math.random() * emojis.length)]
+  const rand = Math.floor(Math.random() * 3)
+  return rand === 0 ? text + ' ' + emoji
+    : rand === 1 ? text.replace(/\s/g, m => m + (Math.random() > 0.8 ? zwsp : ''))
+    : text
 }
 
-const delay = (ms) => new Promise(res => setTimeout(res, ms))
+const delay = ms => new Promise(res => setTimeout(res, ms))
 
 const kirimBroadcast = async (sock) => {
   if (!currentText || !currentIntervalMs) return
@@ -68,14 +67,19 @@ const kirimBroadcast = async (sock) => {
     await delay(Math.random() * 3000 + 1500)
   }
 
-  let report = `📢 Laporan Broadcast:\n\n✅ Terkirim: ${success}\n❌ Gagal: ${failed}\n🔒 Grup Terkunci: ${locked.length}`
-  if (locked.length) report += `\n\n${locked.join('\n')}`
+  let laporan = `📢 Laporan Broadcast:\n\n✅ Terkirim: ${success}\n❌ Gagal: ${failed}\n🔒 Grup Terkunci: ${locked.length}`
+  if (locked.length) laporan += '\n\n' + locked.join('\n')
 
   try {
-    await sock.sendMessage(OWNER_NUMBER, { text: report })
+    await sock.sendMessage(OWNER_NUMBER, { text: laporan })
   } catch (err) {
     console.log('❌ Gagal kirim laporan ke owner:', err.message)
   }
+}
+
+const startBroadcastLoop = (sock) => {
+  if (broadcastInterval) clearInterval(broadcastInterval)
+  broadcastInterval = setInterval(() => kirimBroadcast(sock), currentIntervalMs)
 }
 
 const startBot = async () => {
@@ -85,7 +89,8 @@ const startBot = async () => {
   const sock = makeWASocket({
     version,
     auth: state,
-    logger: pino({ level: 'silent' })
+    logger: pino({ level: 'silent' }),
+    shouldIgnoreJid: jid => jid !== OWNER_NUMBER // Hanya baca pesan dari owner
   })
 
   sock.ev.on('creds.update', saveCreds)
@@ -94,6 +99,12 @@ const startBot = async () => {
     if (connection === 'open') {
       console.log('✅ Bot aktif')
       await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
+
+      if (broadcastActive) {
+        await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
+        await kirimBroadcast(sock)
+        startBroadcastLoop(sock)
+      }
     }
 
     if (connection === 'close') {
@@ -112,39 +123,59 @@ const startBot = async () => {
     if (!msg.message || msg.key.fromMe || msg.key.remoteJid !== OWNER_NUMBER) return
 
     const teks = msg.message.conversation || msg.message?.extendedTextMessage?.text || ''
+    const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
 
     if (teks.startsWith('.settext ')) {
       currentText = teks.slice(9).trim()
-      return sock.sendMessage(OWNER_NUMBER, { text: '✅ Pesan disimpan.' })
+      saveConfig()
+      return reply('✅ Pesan disimpan.')
     }
 
     if (teks.startsWith('.setinterval ')) {
       const val = parseInterval(teks.slice(13).trim())
-      return val
-        ? (currentIntervalMs = val,
-           sock.sendMessage(OWNER_NUMBER, { text: `✅ Interval: ${humanInterval(val)}` }))
-        : sock.sendMessage(OWNER_NUMBER, { text: '❌ Format salah. Contoh: .setinterval 5m' })
+      if (!val) return reply('❌ Format salah. Contoh: `.setinterval 5m`')
+      currentIntervalMs = val
+      saveConfig()
+      return reply(`✅ Interval diset: ${humanInterval(val)}`)
     }
 
     if (teks === '.start') {
-      if (!currentText) return sock.sendMessage(OWNER_NUMBER, { text: '❌ Set pesan dahulu.' })
-      if (broadcastActive) return sock.sendMessage(OWNER_NUMBER, { text: '❌ Broadcast sudah aktif.' })
+      if (!currentText) return reply('❌ Set pesan dulu dengan `.settext`')
+      if (broadcastActive) return reply('❌ Broadcast sudah aktif.')
       broadcastActive = true
-      sock.sendMessage(OWNER_NUMBER, { text: `🚀 Mulai broadcast. Interval: ${humanInterval(currentIntervalMs)}` })
+      saveConfig()
+      reply(`🚀 Broadcast dimulai. Interval: ${humanInterval(currentIntervalMs)}`)
       await kirimBroadcast(sock)
-      broadcastInterval = setInterval(() => kirimBroadcast(sock), currentIntervalMs)
+      startBroadcastLoop(sock)
     }
 
     if (teks === '.stop') {
-      if (!broadcastActive) return sock.sendMessage(OWNER_NUMBER, { text: '❌ Belum aktif.' })
+      if (!broadcastActive) return reply('❌ Broadcast belum aktif.')
       clearInterval(broadcastInterval)
       broadcastActive = false
-      sock.sendMessage(OWNER_NUMBER, { text: '🛑 Broadcast dihentikan.' })
+      saveConfig()
+      return reply('🛑 Broadcast dihentikan.')
     }
 
     if (teks === '.status') {
-      let msg = `📊 Status:\n\nAktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(currentIntervalMs)}\nPesan: ${currentText || '⚠️ Belum diset!'}`
-      sock.sendMessage(OWNER_NUMBER, { text: msg })
+      return reply(`📊 Status:\n\nAktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(currentIntervalMs)}\nPesan: ${currentText || '⚠️ Belum diset!'}`)
+    }
+
+    if (teks === '.totalgrup') {
+      const groups = await sock.groupFetchAllParticipating()
+      return reply(`📦 Total grup: ${Object.keys(groups).length}`)
+    }
+
+    if (teks.startsWith('.join ')) {
+      const link = teks.split(' ')[1]
+      if (!link || !link.includes('chat.whatsapp.com')) return reply('❌ Link tidak valid.')
+      const code = link.trim().split('/').pop()
+      try {
+        await sock.groupAcceptInvite(code)
+        reply('✅ Berhasil join grup.')
+      } catch {
+        reply('❌ Gagal join. Mungkin link kadaluarsa.')
+      }
     }
   })
 }
