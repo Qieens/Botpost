@@ -162,76 +162,97 @@ const startBot = async () => {
   sock.ev.on('groups.update', debounceRefreshGroups)
   sock.ev.on('group-participants.update', debounceRefreshGroups)
 
-  // ====== HANDLE PESAN OWNER ======
+  // ====== HANDLE PESAN ======
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
     if (!msg.message || msg.key.fromMe) return
-    if (msg.key.remoteJid !== OWNER_NUMBER) return
 
-    const teks = msg.message.conversation
-      || msg.message?.extendedTextMessage?.text
-      || msg.message?.imageMessage?.caption
-      || ''
+    const jid = msg.key.remoteJid || ''
+    const fromOwner = jid === OWNER_NUMBER
+    const isGroup = jid.endsWith('.g.us')
 
-    const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
-
-    if (teks.startsWith('.settext ')) {
-      currentText = teks.slice(9).trim()
-      saveConfig()
-      return reply('✅ Pesan disimpan.')
-    }
-
-    if (teks.startsWith('.setinterval ')) {
-      const val = parseInterval(teks.slice(13).trim())
-      if (!val) return reply('❌ Format salah. Contoh: `.setinterval 5m`')
-      currentIntervalMs = val
-      saveConfig()
-      return reply(`✅ Interval diset: ${humanInterval(val)}`)
-    }
-
-    if (teks === '.start') {
-      if (!currentText) return reply('❌ Set pesan dulu dengan `.settext`')
-      if (broadcastActive) return reply('❌ Broadcast sudah aktif.')
-      broadcastActive = true
-      saveConfig()
-      reply(`🚀 Broadcast dimulai. Interval: ${humanInterval(currentIntervalMs)}`)
-      await kirimBroadcast(sock)
-      startBroadcastLoop(sock)
+    // Abaikan semua pesan dari grup, kecuali dari owner
+    if (isGroup && !fromOwner) {
+      // abaikan pesan dari grup agar tidak error decrypt
       return
     }
 
-    if (teks === '.stop') {
-      if (!broadcastActive) return reply('❌ Broadcast belum aktif.')
-      clearInterval(broadcastInterval)
-      broadcastActive = false
-      saveConfig()
-      return reply('🛑 Broadcast dihentikan.')
-    }
+    if (!fromOwner) return // hanya proses pesan dari owner saja
 
-    if (teks === '.status') {
-      return reply(`📊 Status:\n\nAktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(currentIntervalMs)}\nPesan: ${currentText || '⚠️ Belum diset!'}`)
-    }
+    try {
+      const teks = msg.message.conversation
+        || msg.message?.extendedTextMessage?.text
+        || msg.message?.imageMessage?.caption
+        || ''
 
-    if (teks === '.totalgrup') {
-      return reply(`📦 Total grup: ${Object.keys(groupCache).length}`)
-    }
+      const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
 
-    if (teks.startsWith('.join ')) {
-      const links = teks.match(/https:\/\/chat\.whatsapp\.com\/[0-9A-Za-z]+/g)
-      if (!links) return reply('❌ Tidak ada link grup yang valid.')
-
-      for (const link of links) {
-        const code = link.split('/').pop()
-        try {
-          await sock.groupAcceptInvite(code)
-          await refreshGroups()
-          await reply(`✅ Berhasil join grup:\n${link}`)
-        } catch (err) {
-          await reply(`❌ Gagal join grup:\n${link}\nAlasan: ${err.message}`)
-        }
-        await delay(3000)
+      if (teks.startsWith('.settext ')) {
+        currentText = teks.slice(9).trim()
+        saveConfig()
+        return reply('✅ Pesan disimpan.')
       }
-      return
+
+      if (teks.startsWith('.setinterval ')) {
+        const val = parseInterval(teks.slice(13).trim())
+        if (!val) return reply('❌ Format salah. Contoh: `.setinterval 5m`')
+        currentIntervalMs = val
+        saveConfig()
+        return reply(`✅ Interval diset: ${humanInterval(val)}`)
+      }
+
+      if (teks === '.start') {
+        if (!currentText) return reply('❌ Set pesan dulu dengan `.settext`')
+        if (broadcastActive) return reply('❌ Broadcast sudah aktif.')
+        broadcastActive = true
+        saveConfig()
+        reply(`🚀 Broadcast dimulai. Interval: ${humanInterval(currentIntervalMs)}`)
+        await kirimBroadcast(sock)
+        startBroadcastLoop(sock)
+        return
+      }
+
+      if (teks === '.stop') {
+        if (!broadcastActive) return reply('❌ Broadcast belum aktif.')
+        clearInterval(broadcastInterval)
+        broadcastActive = false
+        saveConfig()
+        return reply('🛑 Broadcast dihentikan.')
+      }
+
+      if (teks === '.status') {
+        return reply(`📊 Status:\n\nAktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(currentIntervalMs)}\nPesan: ${currentText || '⚠️ Belum diset!'}`)
+      }
+
+      if (teks === '.totalgrup') {
+        return reply(`📦 Total grup: ${Object.keys(groupCache).length}`)
+      }
+
+      if (teks.startsWith('.join ')) {
+        const links = teks.match(/https:\/\/chat\.whatsapp\.com\/[0-9A-Za-z]+/g)
+        if (!links) return reply('❌ Tidak ada link grup yang valid.')
+
+        for (const link of links) {
+          const code = link.split('/').pop()
+          try {
+            await sock.groupAcceptInvite(code)
+            await refreshGroups()
+            await reply(`✅ Berhasil join grup:\n${link}`)
+          } catch (err) {
+            await reply(`❌ Gagal join grup:\n${link}\nAlasan: ${err.message}`)
+          }
+          await delay(3000)
+        }
+        return
+      }
+    } catch (e) {
+      if (e.message && e.message.includes('Failed decrypt')) {
+        console.warn('⚠️ Gagal decrypt pesan.')
+        // Optional: kirim pesan ke owner bahwa ada pesan gagal decrypt
+        await sock.sendMessage(OWNER_NUMBER, { text: '⚠️ Pesan gagal didekripsi, mohon kirim ulang.' }).catch(() => {})
+      } else {
+        console.error('Error di messages.upsert:', e)
+      }
     }
   })
 
