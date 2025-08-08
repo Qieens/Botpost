@@ -183,22 +183,20 @@ const startBot = async () => {
     }
 
     if (teks.startsWith('.join ')) {
-      const links = teks.split(/\s+/).filter(l => l.includes('chat.whatsapp.com'))
-      if (links.length === 0) return reply('❌ Tidak ada link grup yang valid.')
+  const links = teks.match(/https:\/\/chat\.whatsapp\.com\/[0-9A-Za-z]+/g)
+  if (!links) return reply('❌ Tidak ada link grup yang valid.')
 
-      for (const link of links) {
-        const code = link.trim().split('/').pop().split('?')[0]
-        try {
-          await sock.groupAcceptInvite(code)
-          await refreshGroups()
-          await reply(`✅ Berhasil join grup dari link:\n${link}`)
-        } catch {
-          await reply(`❌ Gagal join grup dari link:\n${link}`)
-        }
-        await delay(2000)
-      }
+  for (const link of links) {
+    const code = link.split('/').pop()
+    try {
+      await sock.groupAcceptInvite(code)
+      await refreshGroups()
+      await reply(`✅ Berhasil join grup:\n${link}`)
+    } catch (err) {
+      await reply(`❌ Gagal join grup:\n${link}\nAlasan: ${err.message}`)
     }
-  })
+    await delay(3000) // delay 5 detik per join biar aman
+  }
 }
 
 startBot()
