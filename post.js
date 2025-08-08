@@ -5,9 +5,9 @@ const pino = require('pino')
 const qrcode = require('qrcode-terminal')
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
 
-// ====== KONFIGURASI ======
-const OWNER_NUMBER = '628975539822@s.whatsapp.net'
+const OWNER_NUMBER = '628975539822@s.whatsapp.net' // ganti nomor owner kamu
 const CONFIG_PATH = './config.json'
+const BATCH_SIZE = 20
 
 // ====== LOAD CONFIG ======
 let config = { currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false }
@@ -15,7 +15,7 @@ if (fs.existsSync(CONFIG_PATH)) {
   try { config = JSON.parse(fs.readFileSync(CONFIG_PATH)) } catch {}
 }
 let { currentText, currentIntervalMs, broadcastActive } = config
-let broadcastInterval, groupCache = {}
+let broadcastTimeout, groupCache = {}
 const saveConfig = () => fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive }, null, 2))
 
 // ====== UTIL ======
@@ -44,62 +44,55 @@ const variateText = (text) => {
 
 const delay = ms => new Promise(res => setTimeout(res, ms))
 
-// ====== BROADCAST QUEUE ======
-let broadcastQueue = []
-let isBroadcastRunning = false
-
-const enqueueBroadcast = (sock, jid, text) => {
-  broadcastQueue.push({ sock, jid, text })
-  processBroadcastQueue()
-}
-
-const processBroadcastQueue = async () => {
-  if (isBroadcastRunning) return
-  isBroadcastRunning = true
-
-  while (broadcastQueue.length > 0) {
-    const task = broadcastQueue.shift()
-    try {
-      await task.sock.sendMessage(task.jid, { text: variateText(task.text) })
-      console.log(`✅ Broadcast terkirim ke ${task.jid}`)
-    } catch (err) {
-      console.error(`❌ Gagal broadcast ke ${task.jid}:`, err.message)
-    }
-    await delay(300) // jeda 300ms antar pesan supaya cepat tapi tidak spam
-  }
-
-  isBroadcastRunning = false
-}
-
 // ====== BROADCAST ======
-const kirimBroadcast = async (sock) => {
-  if (!currentText || !currentIntervalMs) return
-
-  const ids = Object.keys(groupCache)
-  let locked = []
-
-  for (const id of ids) {
-    const info = groupCache[id]
-    if (info?.announce) {
-      locked.push(`🔒 ${info.subject || id}`)
-      continue
+async function sendBatch(sock, batch, text) {
+  for (const jid of batch) {
+    try {
+      await sock.sendMessage(jid, { text: variateText(text) })
+      console.log(`✅ Broadcast terkirim ke ${jid}`)
+      await delay(300)
+    } catch (err) {
+      console.error(`❌ Gagal broadcast ke ${jid}:`, err.message)
     }
-    enqueueBroadcast(sock, id, currentText)  // Masukkan ke queue broadcast
-  }
-
-  let laporan = `📢 Laporan Broadcast:\n\n🔒 Grup Terkunci: ${locked.length}`
-  if (locked.length) laporan += '\n\n' + locked.join('\n')
-
-  try {
-    await sock.sendMessage(OWNER_NUMBER, { text: laporan })
-  } catch (err) {
-    console.log('❌ Gagal kirim laporan:', err.message)
   }
 }
 
-const startBroadcastLoop = (sock) => {
-  if (broadcastInterval) clearInterval(broadcastInterval)
-  broadcastInterval = setInterval(() => kirimBroadcast(sock), currentIntervalMs)
+async function broadcastAll(sock) {
+  if (!currentText) return
+
+  // Filter grup yang tidak terkunci (announce !== true)
+  const allGroups = Object.entries(groupCache)
+    .filter(([_, info]) => !info.announce)
+    .map(([jid, _]) => jid)
+
+  if (allGroups.length === 0) {
+    await sock.sendMessage(OWNER_NUMBER, { text: '⚠️ Tidak ada grup yang ditemukan untuk broadcast.' })
+    return
+  }
+
+  // Bagi ke batch
+  const batches = []
+  for (let i = 0; i < allGroups.length; i += BATCH_SIZE) {
+    batches.push(allGroups.slice(i, i + BATCH_SIZE))
+  }
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i]
+    await sock.sendMessage(OWNER_NUMBER, { text: `📢 Mulai kirim batch ${i + 1} dari ${batches.length}, ukuran batch: ${batch.length}` })
+    await sendBatch(sock, batch, currentText)
+    await sock.sendMessage(OWNER_NUMBER, { text: `✅ Batch ${i + 1} selesai dikirim.` })
+    if (i < batches.length - 1) await delay(2000) // delay 2 detik antar batch
+  }
+}
+
+// Loop broadcast dengan interval
+async function startBroadcastLoop(sock) {
+  if (broadcastTimeout) clearTimeout(broadcastTimeout)
+
+  if (!broadcastActive) return
+
+  await broadcastAll(sock)
+  broadcastTimeout = setTimeout(() => startBroadcastLoop(sock), currentIntervalMs)
 }
 
 // ====== START BOT ======
@@ -115,38 +108,27 @@ const startBot = async () => {
 
   sock.ev.on('creds.update', saveCreds)
 
-  // Debounce + retry refreshGroups
-  let refreshTimeout = null
+  // Refresh group cache
   let isRefreshing = false
-
   const refreshGroups = async () => {
     if (isRefreshing) return
     isRefreshing = true
-
     try {
       groupCache = await sock.groupFetchAllParticipating()
       console.log(`🔄 Cache grup diperbarui: ${Object.keys(groupCache).length} grup`)
     } catch (err) {
-      if (err?.message?.toLowerCase().includes('rate-overlimit')) {
-        console.warn('⚠️ Rate limit kena, coba lagi dalam 1 menit...')
-        setTimeout(() => {
-          isRefreshing = false
-          refreshGroups()
-        }, 60000)
-        return
-      }
       console.error('Gagal refresh group cache:', err.message)
     }
-
     isRefreshing = false
   }
 
-  const debounceRefreshGroups = () => {
-    if (refreshTimeout) clearTimeout(refreshTimeout)
-    refreshTimeout = setTimeout(() => {
-      refreshGroups()
-    }, 60000)
-  }
+  const debounceRefreshGroups = (() => {
+    let timeout = null
+    return () => {
+      if (timeout) clearTimeout(timeout)
+      timeout = setTimeout(refreshGroups, 60000)
+    }
+  })()
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
@@ -162,7 +144,6 @@ const startBot = async () => {
 
       if (broadcastActive) {
         await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
-        await kirimBroadcast(sock)
         startBroadcastLoop(sock)
       }
     }
@@ -178,11 +159,10 @@ const startBot = async () => {
     }
   })
 
-  // Pasang event dengan debounce
   sock.ev.on('groups.update', debounceRefreshGroups)
   sock.ev.on('group-participants.update', debounceRefreshGroups)
 
-  // ====== HANDLE PESAN ======
+  // Handle messages dari owner
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
     if (!msg.message || msg.key.fromMe) return
@@ -191,13 +171,8 @@ const startBot = async () => {
     const fromOwner = jid === OWNER_NUMBER
     const isGroup = jid.endsWith('.g.us')
 
-    // Abaikan semua pesan dari grup, kecuali dari owner
-    if (isGroup && !fromOwner) {
-      // abaikan pesan dari grup agar tidak error decrypt
-      return
-    }
-
-    if (!fromOwner) return // hanya proses pesan dari owner saja
+    if (isGroup && !fromOwner) return
+    if (!fromOwner) return
 
     try {
       const teks = msg.message.conversation
@@ -227,15 +202,14 @@ const startBot = async () => {
         broadcastActive = true
         saveConfig()
         reply(`🚀 Broadcast dimulai. Interval: ${humanInterval(currentIntervalMs)}`)
-        await kirimBroadcast(sock)
         startBroadcastLoop(sock)
         return
       }
 
       if (teks === '.stop') {
         if (!broadcastActive) return reply('❌ Broadcast belum aktif.')
-        clearInterval(broadcastInterval)
         broadcastActive = false
+        if (broadcastTimeout) clearTimeout(broadcastTimeout)
         saveConfig()
         return reply('🛑 Broadcast dihentikan.')
       }
@@ -274,7 +248,6 @@ const startBot = async () => {
       }
     }
   })
-
 }
 
 startBot()
