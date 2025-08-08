@@ -44,12 +44,39 @@ const variateText = (text) => {
 
 const delay = ms => new Promise(res => setTimeout(res, ms))
 
+// ====== BROADCAST QUEUE ======
+let broadcastQueue = []
+let isBroadcastRunning = false
+
+const enqueueBroadcast = (sock, jid, text) => {
+  broadcastQueue.push({ sock, jid, text })
+  processBroadcastQueue()
+}
+
+const processBroadcastQueue = async () => {
+  if (isBroadcastRunning) return
+  isBroadcastRunning = true
+
+  while (broadcastQueue.length > 0) {
+    const task = broadcastQueue.shift()
+    try {
+      await task.sock.sendMessage(task.jid, { text: variateText(task.text) })
+      console.log(`✅ Broadcast terkirim ke ${task.jid}`)
+    } catch (err) {
+      console.error(`❌ Gagal broadcast ke ${task.jid}:`, err.message)
+    }
+    await delay(300) // jeda 300ms antar pesan supaya cepat tapi tidak spam
+  }
+
+  isBroadcastRunning = false
+}
+
 // ====== BROADCAST ======
 const kirimBroadcast = async (sock) => {
   if (!currentText || !currentIntervalMs) return
 
   const ids = Object.keys(groupCache)
-  let success = 0, failed = 0, locked = []
+  let locked = []
 
   for (const id of ids) {
     const info = groupCache[id]
@@ -57,17 +84,10 @@ const kirimBroadcast = async (sock) => {
       locked.push(`🔒 ${info.subject || id}`)
       continue
     }
-    try {
-      await sock.sendMessage(id, { text: variateText(currentText) })
-      success++
-    } catch (err) {
-      failed++
-      console.error(`Gagal kirim ke grup ${id}:`, err.message)
-    }
-    await delay(Math.random() * 1200 + 800)
+    enqueueBroadcast(sock, id, currentText)  // Masukkan ke queue broadcast
   }
 
-  let laporan = `📢 Laporan Broadcast:\n\n✅ Terkirim: ${success}\n❌ Gagal: ${failed}\n🔒 Grup Terkunci: ${locked.length}`
+  let laporan = `📢 Laporan Broadcast:\n\n🔒 Grup Terkunci: ${locked.length}`
   if (locked.length) laporan += '\n\n' + locked.join('\n')
 
   try {
@@ -248,7 +268,6 @@ const startBot = async () => {
     } catch (e) {
       if (e.message && e.message.includes('Failed decrypt')) {
         console.warn('⚠️ Gagal decrypt pesan.')
-        // Optional: kirim pesan ke owner bahwa ada pesan gagal decrypt
         await sock.sendMessage(OWNER_NUMBER, { text: '⚠️ Pesan gagal didekripsi, mohon kirim ulang.' }).catch(() => {})
       } else {
         console.error('Error di messages.upsert:', e)
