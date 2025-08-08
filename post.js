@@ -198,5 +198,6 @@ const startBot = async () => {
     await delay(3000) // delay 5 detik per join biar aman
   }
 }
+}
 
 startBot()
