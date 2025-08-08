@@ -213,7 +213,6 @@ const startBot = async () => {
         if (broadcastActive) return reply('❌ Broadcast sudah aktif.')
         broadcastActive = true
         saveConfig()
-        reply(`🚀 Broadcast dimulai. Interval: ${humanInterval(currentIntervalMs)}`)
         startBroadcastLoop(sock)
         return
       }
