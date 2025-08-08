@@ -1,4 +1,3 @@
-// ENV setup
 process.env.BAILEYS_NO_LOG = 'true'
 
 const fs = require('fs')
@@ -7,34 +6,24 @@ const qrcode = require('qrcode-terminal')
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
 
 // ====== KONFIGURASI ======
-const OWNER_NUMBER = '628975539822@s.whatsapp.net' // Nomor owner format JID
+const OWNER_NUMBER = '628975539822@s.whatsapp.net'
 const CONFIG_PATH = './config.json'
 
-// ====== LOAD / SIMPAN CONFIG ======
+// ====== LOAD CONFIG ======
 let config = { currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false }
 if (fs.existsSync(CONFIG_PATH)) {
   try { config = JSON.parse(fs.readFileSync(CONFIG_PATH)) } catch {}
 }
 let { currentText, currentIntervalMs, broadcastActive } = config
-let broadcastInterval
-const saveConfig = () => {
-  try {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive }, null, 2))
-  } catch (e) {
-    console.log('⚠️ Gagal menyimpan config:', e.message)
-  }
-}
+let broadcastInterval, groupCache = {}
+const saveConfig = () => fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive }, null, 2))
 
-// Helper untuk membandingkan nomor JID secara robust (bandingkan bagian sebelum @)
-const jidBase = (jid) => (typeof jid === 'string' && jid.includes('@')) ? jid.split('@')[0] : jid
-
-// ====== FUNGSI UTIL ======
+// ====== UTIL ======
 const parseInterval = (text) => {
   const match = text.match(/^(\d+)(s|m|h)$/i)
   if (!match) return null
-  const [, val, unit] = match
-  const num = parseInt(val)
-  return unit.toLowerCase() === 's' ? num * 1000 : unit.toLowerCase() === 'm' ? num * 60000 : num * 3600000
+  const num = parseInt(match[1])
+  return match[2] === 's' ? num * 1000 : match[2] === 'm' ? num * 60000 : num * 3600000
 }
 
 const humanInterval = (ms) => {
@@ -55,40 +44,26 @@ const variateText = (text) => {
 
 const delay = ms => new Promise(res => setTimeout(res, ms))
 
-// Ambil teks komand dari berbagai tipe pesan
-const extractTextFromMessage = (message) => {
-  if (!message) return ''
-  if (message.conversation) return message.conversation
-  if (message.extendedTextMessage && message.extendedTextMessage.text) return message.extendedTextMessage.text
-  if (message.imageMessage && message.imageMessage.caption) return message.imageMessage.caption
-  if (message.videoMessage && message.videoMessage.caption) return message.videoMessage.caption
-  if (message.listResponseMessage && message.listResponseMessage.singleSelectReply && message.listResponseMessage.singleSelectReply.selectedRowId) return message.listResponseMessage.singleSelectReply.selectedRowId
-  if (message.buttonsResponseMessage && message.buttonsResponseMessage.selectedButtonId) return message.buttonsResponseMessage.selectedButtonId
-  return ''
-}
-
 // ====== BROADCAST ======
 const kirimBroadcast = async (sock) => {
   if (!currentText || !currentIntervalMs) return
 
-  const groups = await sock.groupFetchAllParticipating()
-  const ids = Object.keys(groups)
-
+  const ids = Object.keys(groupCache)
   let success = 0, failed = 0, locked = []
 
   for (const id of ids) {
-    const info = groups[id]
-    if (info?.announce) {
+    const info = groupCache[id]
+    if (info.announce) {
       locked.push(`🔒 ${info.subject}`)
       continue
     }
     try {
       await sock.sendMessage(id, { text: variateText(currentText) })
       success++
-    } catch (e) {
+    } catch {
       failed++
     }
-    await delay(Math.random() * 3000 + 1500)
+    await delay(Math.random() * 1200 + 800) // Lebih cepat dari sebelumnya
   }
 
   let laporan = `📢 Laporan Broadcast:\n\n✅ Terkirim: ${success}\n❌ Gagal: ${failed}\n🔒 Grup Terkunci: ${locked.length}`
@@ -97,7 +72,7 @@ const kirimBroadcast = async (sock) => {
   try {
     await sock.sendMessage(OWNER_NUMBER, { text: laporan })
   } catch (err) {
-    console.log('❌ Gagal kirim laporan ke owner:', err.message)
+    console.log('❌ Gagal kirim laporan:', err.message)
   }
 }
 
@@ -115,28 +90,29 @@ const startBot = async () => {
     version,
     auth: state,
     logger: pino({ level: 'silent' })
-    // jangan pakai shouldIgnoreJid di sini — kita lakukan filter manual di messages.upsert
   })
 
   sock.ev.on('creds.update', saveCreds)
 
+  // Update cache grup
+  const refreshGroups = async () => {
+    groupCache = await sock.groupFetchAllParticipating()
+  }
+
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      try {
-        console.clear()
-        console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR berikut untuk menghubungkan bot:\n`)
-        qrcode.generate(qr, { small: true })
-        console.log('\n💡 Gunakan WhatsApp untuk scan QR ini.')
-      } catch (err) {
-        console.error('❌ Gagal menampilkan QR:', err.message)
-      }
+      console.clear()
+      console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR:\n`)
+      qrcode.generate(qr, { small: true })
     }
 
     if (connection === 'open') {
       console.log('✅ Bot aktif')
-      try { await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' }) } catch {}
+      await refreshGroups()
+      await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
+
       if (broadcastActive) {
-        try { await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` }) } catch {}
+        await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
         await kirimBroadcast(sock)
         startBroadcastLoop(sock)
       }
@@ -146,8 +122,6 @@ const startBot = async () => {
       const reason = lastDisconnect?.error?.output?.statusCode
       if (reason !== DisconnectReason.loggedOut) {
         console.log('🔁 Reconnecting...')
-        // tunggu sedikit sebelum reconnect untuk mencegah rapid-restarts
-        await delay(1500)
         startBot()
       } else {
         process.exit(1)
@@ -155,99 +129,73 @@ const startBot = async () => {
     }
   })
 
-  // ====== HANDLE PESAN DARI OWNER SAJA ======
+  // Update cache jika ada perubahan grup
+  sock.ev.on('groups.update', refreshGroups)
+  sock.ev.on('group-participants.update', refreshGroups)
+
+  // ====== HANDLE PESAN OWNER ======
   sock.ev.on('messages.upsert', async ({ messages }) => {
-    if (!Array.isArray(messages)) return
-    for (const msg of messages) {
-      try {
-        if (!msg || !msg.message || msg.key?.fromMe) continue
+    const msg = messages[0]
+    if (!msg.message || msg.key.fromMe) return
+    if (msg.key.remoteJid !== OWNER_NUMBER) return
 
-        // tentukan pengirim: participant (group) atau remoteJid (1:1)
-        const senderJid = msg.key.participant || msg.key.remoteJid
-        // bandingkan hanya bagian sebelum @ (nomor) agar lebih robust
-        if (jidBase(senderJid) !== jidBase(OWNER_NUMBER)) continue
+    const teks = msg.message.conversation || msg.message?.extendedTextMessage?.text || ''
+    const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
 
-        // Ambil teks dari message
-        const teks = extractTextFromMessage(msg.message).trim()
-        if (!teks) continue
+    if (teks.startsWith('.settext ')) {
+      currentText = teks.slice(9).trim()
+      saveConfig()
+      return reply('✅ Pesan disimpan.')
+    }
 
-        const reply = async (text) => {
-          try {
-            await sock.sendMessage(OWNER_NUMBER, { text })
-          } catch (e) { /* jangan crash kalau gagal kirim reply */ }
+    if (teks.startsWith('.setinterval ')) {
+      const val = parseInterval(teks.slice(13).trim())
+      if (!val) return reply('❌ Format salah. Contoh: `.setinterval 5m`')
+      currentIntervalMs = val
+      saveConfig()
+      return reply(`✅ Interval diset: ${humanInterval(val)}`)
+    }
+
+    if (teks === '.start') {
+      if (!currentText) return reply('❌ Set pesan dulu dengan `.settext`')
+      if (broadcastActive) return reply('❌ Broadcast sudah aktif.')
+      broadcastActive = true
+      saveConfig()
+      reply(`🚀 Broadcast dimulai. Interval: ${humanInterval(currentIntervalMs)}`)
+      await kirimBroadcast(sock)
+      startBroadcastLoop(sock)
+    }
+
+    if (teks === '.stop') {
+      if (!broadcastActive) return reply('❌ Broadcast belum aktif.')
+      clearInterval(broadcastInterval)
+      broadcastActive = false
+      saveConfig()
+      return reply('🛑 Broadcast dihentikan.')
+    }
+
+    if (teks === '.status') {
+      return reply(`📊 Status:\n\nAktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(currentIntervalMs)}\nPesan: ${currentText || '⚠️ Belum diset!'}`)
+    }
+
+    if (teks === '.totalgrup') {
+      return reply(`📦 Total grup: ${Object.keys(groupCache).length}`)
+    }
+
+    if (teks.startsWith('.join ')) {
+      const links = teks.split(/\s+/).filter(l => l.includes('chat.whatsapp.com'))
+      if (links.length === 0) return reply('❌ Tidak ada link grup yang valid.')
+
+      for (const link of links) {
+        const code = link.trim().split('/').pop().split('?')[0]
+        try {
+          await sock.groupAcceptInvite(code)
+          await refreshGroups()
+          await reply(`✅ Berhasil join grup dari link:\n${link}`)
+        } catch {
+          await reply(`❌ Gagal join grup dari link:\n${link}`)
         }
-
-        // COMMANDS
-        if (teks.startsWith('.settext ')) {
-          currentText = teks.slice(9).trim()
-          saveConfig()
-          await reply('✅ Pesan disimpan.')
-          continue
-        }
-
-        if (teks.startsWith('.setinterval ')) {
-          const val = parseInterval(teks.slice(13).trim())
-          if (!val) {
-            await reply('❌ Format salah. Contoh: `.setinterval 5m`')
-          } else {
-            currentIntervalMs = val
-            saveConfig()
-            await reply(`✅ Interval diset: ${humanInterval(val)}`)
-          }
-          continue
-        }
-
-        if (teks === '.start') {
-          if (!currentText) { await reply('❌ Set pesan dulu dengan `.settext`'); continue }
-          if (broadcastActive) { await reply('❌ Broadcast sudah aktif.'); continue }
-          broadcastActive = true
-          saveConfig()
-          await reply(`🚀 Broadcast dimulai. Interval: ${humanInterval(currentIntervalMs)}`)
-          await kirimBroadcast(sock)
-          startBroadcastLoop(sock)
-          continue
-        }
-
-        if (teks === '.stop') {
-          if (!broadcastActive) { await reply('❌ Broadcast belum aktif.'); continue }
-          clearInterval(broadcastInterval)
-          broadcastActive = false
-          saveConfig()
-          await reply('🛑 Broadcast dihentikan.')
-          continue
-        }
-
-        if (teks === '.status') {
-          await reply(`📊 Status:\n\nAktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(currentIntervalMs)}\nPesan: ${currentText || '⚠️ Belum diset!'}`)
-          continue
-        }
-
-        if (teks === '.totalgrup') {
-          const groups = await sock.groupFetchAllParticipating()
-          await reply(`📦 Total grup: ${Object.keys(groups).length}`)
-          continue
-        }
-
-        if (teks.startsWith('.join ')) {
-          const links = teks.split(/\s+/).filter(l => l.includes('chat.whatsapp.com'))
-          if (links.length === 0) { await reply('❌ Tidak ada link grup yang valid.'); continue }
-
-          for (const link of links) {
-            const code = link.trim().split('/').pop().split('?')[0]
-            try {
-              await sock.groupAcceptInvite(code)
-              await reply(`✅ Berhasil join grup dari link:\n${link}`)
-            } catch (e) {
-              await reply(`❌ Gagal join grup dari link:\n${link}`)
-            }
-            await delay(3000)
-          }
-          continue
-        }
-
-      } catch (err) {
-        // jangan crash seluruh bot karena satu pesan error
-        console.log('⚠️ Error memproses pesan owner:', err.message)
+        await delay(2000)
       }
     }
   })
