@@ -64,7 +64,7 @@ const kirimBroadcast = async (sock) => {
       failed++
       console.error(`Gagal kirim ke grup ${id}:`, err.message)
     }
-    await delay(Math.random() * 1200 + 800) // delay 800-2000ms
+    await delay(Math.random() * 1200 + 800)
   }
 
   let laporan = `📢 Laporan Broadcast:\n\n✅ Terkirim: ${success}\n❌ Gagal: ${failed}\n🔒 Grup Terkunci: ${locked.length}`
@@ -95,13 +95,37 @@ const startBot = async () => {
 
   sock.ev.on('creds.update', saveCreds)
 
-  // Update cache grup
+  // Debounce + retry refreshGroups
+  let refreshTimeout = null
+  let isRefreshing = false
+
   const refreshGroups = async () => {
+    if (isRefreshing) return
+    isRefreshing = true
+
     try {
       groupCache = await sock.groupFetchAllParticipating()
+      console.log(`🔄 Cache grup diperbarui: ${Object.keys(groupCache).length} grup`)
     } catch (err) {
+      if (err?.message?.toLowerCase().includes('rate-overlimit')) {
+        console.warn('⚠️ Rate limit kena, coba lagi dalam 1 menit...')
+        setTimeout(() => {
+          isRefreshing = false
+          refreshGroups()
+        }, 60000)
+        return
+      }
       console.error('Gagal refresh group cache:', err.message)
     }
+
+    isRefreshing = false
+  }
+
+  const debounceRefreshGroups = () => {
+    if (refreshTimeout) clearTimeout(refreshTimeout)
+    refreshTimeout = setTimeout(() => {
+      refreshGroups()
+    }, 60000)
   }
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
@@ -134,9 +158,9 @@ const startBot = async () => {
     }
   })
 
-  // Update cache jika ada perubahan grup
-  sock.ev.on('groups.update', refreshGroups)
-  sock.ev.on('group-participants.update', refreshGroups)
+  // Pasang event dengan debounce
+  sock.ev.on('groups.update', debounceRefreshGroups)
+  sock.ev.on('group-participants.update', debounceRefreshGroups)
 
   // ====== HANDLE PESAN OWNER ======
   sock.ev.on('messages.upsert', async ({ messages }) => {
@@ -144,7 +168,6 @@ const startBot = async () => {
     if (!msg.message || msg.key.fromMe) return
     if (msg.key.remoteJid !== OWNER_NUMBER) return
 
-    // Ambil teks pesan dari berbagai tipe pesan teks
     const teks = msg.message.conversation
       || msg.message?.extendedTextMessage?.text
       || msg.message?.imageMessage?.caption
