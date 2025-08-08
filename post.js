@@ -189,7 +189,7 @@ const startBot = async () => {
         return reply('✅ Pesan disimpan.')
       }
 
-      if (teks.startsWith('.interval ')) {
+      if (teks.startsWith('.setinterval ')) {
         const val = parseInterval(teks.slice(13).trim())
         if (!val) return reply('❌ Format salah. Contoh: `.setinterval 5m`')
         currentIntervalMs = val
