@@ -183,26 +183,26 @@ const startBot = async () => {
 
       const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
 
-      if (teks.startsWith('.settext ')) {
+      if (teks.startsWith('.teks ')) {
         currentText = teks.slice(9).trim()
         saveConfig()
         return reply('✅ Pesan disimpan.')
       }
 
-      if (teks.startsWith('.setinterval ')) {
+      if (teks.startsWith('.interval ')) {
         const val = parseInterval(teks.slice(13).trim())
         if (!val) return reply('❌ Format salah. Contoh: `.setinterval 5m`')
         currentIntervalMs = val
         saveConfig()
         return reply(`✅ Interval diset: ${humanInterval(val)}`)
       }
-      if (teks === '.variatetext on') {
+      if (teks === '.variasi on') {
         variatetextActive = true
         saveConfig()
         return reply('✅ Variasi teks diaktifkan.')
         }
 
-      if (teks === '.variatetext off') {
+      if (teks === '.variasi off') {
         variatetextActive = false
         saveConfig()
         return reply('✅ Variasi teks dinonaktifkan.')
