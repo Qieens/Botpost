@@ -23,7 +23,7 @@ const parseInterval = (text) => {
   const match = text.match(/^(\d+)(s|m|h)$/i)
   if (!match) return null
   const num = parseInt(match[1])
-  return match[2] === 's' ? num * 1000 : match[2] === 'm' ? num * 60000 : num * 3600000
+  return match[2].toLowerCase() === 's' ? num * 1000 : match[2].toLowerCase() === 'm' ? num * 60000 : num * 3600000
 }
 
 const humanInterval = (ms) => {
@@ -53,17 +53,18 @@ const kirimBroadcast = async (sock) => {
 
   for (const id of ids) {
     const info = groupCache[id]
-    if (info.announce) {
-      locked.push(`🔒 ${info.subject}`)
+    if (info?.announce) {
+      locked.push(`🔒 ${info.subject || id}`)
       continue
     }
     try {
       await sock.sendMessage(id, { text: variateText(currentText) })
       success++
-    } catch {
+    } catch (err) {
       failed++
+      console.error(`Gagal kirim ke grup ${id}:`, err.message)
     }
-    await delay(Math.random() * 1200 + 800) // Lebih cepat dari sebelumnya
+    await delay(Math.random() * 1200 + 800) // delay 800-2000ms
   }
 
   let laporan = `📢 Laporan Broadcast:\n\n✅ Terkirim: ${success}\n❌ Gagal: ${failed}\n🔒 Grup Terkunci: ${locked.length}`
@@ -96,7 +97,11 @@ const startBot = async () => {
 
   // Update cache grup
   const refreshGroups = async () => {
-    groupCache = await sock.groupFetchAllParticipating()
+    try {
+      groupCache = await sock.groupFetchAllParticipating()
+    } catch (err) {
+      console.error('Gagal refresh group cache:', err.message)
+    }
   }
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
@@ -121,8 +126,8 @@ const startBot = async () => {
     if (connection === 'close') {
       const reason = lastDisconnect?.error?.output?.statusCode
       if (reason !== DisconnectReason.loggedOut) {
-        console.log('🔁 Reconnecting...')
-        startBot()
+        console.log('🔁 Reconnecting in 5 seconds...')
+        setTimeout(() => startBot(), 5000)
       } else {
         process.exit(1)
       }
@@ -139,7 +144,12 @@ const startBot = async () => {
     if (!msg.message || msg.key.fromMe) return
     if (msg.key.remoteJid !== OWNER_NUMBER) return
 
-    const teks = msg.message.conversation || msg.message?.extendedTextMessage?.text || ''
+    // Ambil teks pesan dari berbagai tipe pesan teks
+    const teks = msg.message.conversation
+      || msg.message?.extendedTextMessage?.text
+      || msg.message?.imageMessage?.caption
+      || ''
+
     const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
 
     if (teks.startsWith('.settext ')) {
@@ -164,6 +174,7 @@ const startBot = async () => {
       reply(`🚀 Broadcast dimulai. Interval: ${humanInterval(currentIntervalMs)}`)
       await kirimBroadcast(sock)
       startBroadcastLoop(sock)
+      return
     }
 
     if (teks === '.stop') {
@@ -183,21 +194,24 @@ const startBot = async () => {
     }
 
     if (teks.startsWith('.join ')) {
-  const links = teks.match(/https:\/\/chat\.whatsapp\.com\/[0-9A-Za-z]+/g)
-  if (!links) return reply('❌ Tidak ada link grup yang valid.')
+      const links = teks.match(/https:\/\/chat\.whatsapp\.com\/[0-9A-Za-z]+/g)
+      if (!links) return reply('❌ Tidak ada link grup yang valid.')
 
-  for (const link of links) {
-    const code = link.split('/').pop()
-    try {
-      await sock.groupAcceptInvite(code)
-      await refreshGroups()
-      await reply(`✅ Berhasil join grup:\n${link}`)
-    } catch (err) {
-      await reply(`❌ Gagal join grup:\n${link}\nAlasan: ${err.message}`)
+      for (const link of links) {
+        const code = link.split('/').pop()
+        try {
+          await sock.groupAcceptInvite(code)
+          await refreshGroups()
+          await reply(`✅ Berhasil join grup:\n${link}`)
+        } catch (err) {
+          await reply(`❌ Gagal join grup:\n${link}\nAlasan: ${err.message}`)
+        }
+        await delay(3000)
+      }
+      return
     }
-    await delay(3000) // delay 5 detik per join biar aman
-  }
-}
+  })
+
 }
 
 startBot()
