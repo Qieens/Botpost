@@ -10,13 +10,13 @@ const CONFIG_PATH = './config.json'
 const BATCH_SIZE = 20
 
 // ====== LOAD CONFIG ======
-let config = { currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false }
+let config = { currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false, variatetextActive: true }
 if (fs.existsSync(CONFIG_PATH)) {
   try { config = JSON.parse(fs.readFileSync(CONFIG_PATH)) } catch {}
 }
-let { currentText, currentIntervalMs, broadcastActive } = config
+let { currentText, currentIntervalMs, broadcastActive, variatetextActive } = config
 let broadcastTimeout, groupCache = {}
-const saveConfig = () => fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive }, null, 2))
+const saveConfig = () => fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive, variatetextActive }, null, 2))
 
 // ====== UTIL ======
 const parseInterval = (text) => {
@@ -33,6 +33,7 @@ const humanInterval = (ms) => {
 }
 
 const variateText = (text) => {
+  if (!variatetextActive) return text
   const emojis = ['✨', '✅', '🔥', '🚀', '📌', '🧠']
   const zwsp = '\u200B'
   const emoji = emojis[Math.floor(Math.random() * emojis.length)]
@@ -195,6 +196,17 @@ const startBot = async () => {
         saveConfig()
         return reply(`✅ Interval diset: ${humanInterval(val)}`)
       }
+      if (teks === '.variatetext on') {
+        variatetextActive = true
+        saveConfig()
+        return reply('✅ Variasi teks diaktifkan.')
+        }
+
+      if (teks === '.variatetext off') {
+        variatetextActive = false
+        saveConfig()
+        return reply('✅ Variasi teks dinonaktifkan.')
+        }
 
       if (teks === '.start') {
         if (!currentText) return reply('❌ Set pesan dulu dengan `.settext`')
