@@ -5,35 +5,59 @@ const pino = require('pino')
 const qrcode = require('qrcode-terminal')
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
 
-const OWNER_NUMBER = '628975539822@s.whatsapp.net' // ganti nomor owner kamu
-const CONFIG_PATH = './config.json'
+// **CONFIG**
+const OWNER_NUMBER = '628975539822@s.whatsapp.net'
+const CONTROL_GROUP_JID = '123456789-123456@g.us' // ganti dengan jid grup kontrol kamu
+
 const BATCH_SIZE = 20
 
-// ====== LOAD CONFIG ======
-let config = { currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false, variatetextActive: true }
-if (fs.existsSync(CONFIG_PATH)) {
-  try { config = JSON.parse(fs.readFileSync(CONFIG_PATH)) } catch {}
-}
-let { currentText, currentIntervalMs, broadcastActive, variatetextActive } = config
-let broadcastTimeout, groupCache = {}
-const saveConfig = () => fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive, variatetextActive }, null, 2))
+// ====== BOT CONFIGS ======
+// Set prefix tiap bot biar bisa bedain perintah dari grup kontrol
+const bots = [
+  { id: 'BOT1', currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false, variateTextActive: true, broadcastTimeout: null, groupCache: {}, sessionFolder: 'session-BOT1' },
+  { id: 'BOT2', currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false, variateTextActive: true, broadcastTimeout: null, groupCache: {}, sessionFolder: 'session-BOT2' }
+]
 
-// ====== UTIL ======
-const parseInterval = (text) => {
+// Simpan config tiap bot ke file JSON per bot
+function saveConfig(bot) {
+  const path = `./config_${bot.id}.json`
+  fs.writeFileSync(path, JSON.stringify({
+    currentText: bot.currentText,
+    currentIntervalMs: bot.currentIntervalMs,
+    broadcastActive: bot.broadcastActive,
+    variateTextActive: bot.variateTextActive
+  }, null, 2))
+}
+
+function loadConfig(bot) {
+  const path = `./config_${bot.id}.json`
+  if (fs.existsSync(path)) {
+    try {
+      const conf = JSON.parse(fs.readFileSync(path))
+      bot.currentText = conf.currentText || ''
+      bot.currentIntervalMs = conf.currentIntervalMs || 5 * 60 * 1000
+      bot.broadcastActive = conf.broadcastActive || false
+      bot.variateTextActive = conf.variateTextActive ?? true
+    } catch {}
+  }
+}
+
+// Utils
+function parseInterval(text) {
   const match = text.match(/^(\d+)(s|m|h)$/i)
   if (!match) return null
   const num = parseInt(match[1])
   return match[2].toLowerCase() === 's' ? num * 1000 : match[2].toLowerCase() === 'm' ? num * 60000 : num * 3600000
 }
 
-const humanInterval = (ms) => {
+function humanInterval(ms) {
   if (ms < 60000) return `${ms / 1000}s`
   if (ms < 3600000) return `${ms / 60000}m`
   return `${ms / 3600000}h`
 }
 
-const variateText = (text) => {
-  if (!variatetextActive) return text
+function variateText(text, active) {
+  if (!active) return text
   const emojis = ['✨', '✅', '🔥', '🚀', '📌', '🧠']
   const zwsp = '\u200B'
   const emoji = emojis[Math.floor(Math.random() * emojis.length)]
@@ -45,33 +69,32 @@ const variateText = (text) => {
 
 const delay = ms => new Promise(res => setTimeout(res, ms))
 
-// ====== BROADCAST ======
-async function sendBatch(sock, batch, text) {
+// Send broadcast batch
+async function sendBatch(sock, batch, text, bot) {
   for (const jid of batch) {
     try {
-      await sock.sendMessage(jid, { text: variateText(text) })
-      console.log(`✅ Broadcast terkirim ke ${jid}`)
+      await sock.sendMessage(jid, { text: variateText(text, bot.variateTextActive) })
+      console.log(`✅ [${bot.id}] Broadcast terkirim ke ${jid}`)
       await delay(300)
     } catch (err) {
-      console.error(`❌ Gagal broadcast ke ${jid}:`, err.message)
+      console.error(`❌ [${bot.id}] Gagal broadcast ke ${jid}:`, err.message)
     }
   }
 }
 
-async function broadcastAll(sock) {
-  if (!currentText) return
+// Broadcast semua grup kecuali grup kontrol
+async function broadcastAll(sock, bot) {
+  if (!bot.currentText) return
 
-  // Filter grup yang tidak terkunci (announce !== true)
-  const allGroups = Object.entries(groupCache)
-    .filter(([_, info]) => !info.announce)
-    .map(([jid, _]) => jid)
+  const allGroups = Object.entries(bot.groupCache)
+    .filter(([jid]) => jid !== CONTROL_GROUP_JID)
+    .map(([jid]) => jid)
 
   if (allGroups.length === 0) {
-    await sock.sendMessage(OWNER_NUMBER, { text: '⚠️ Tidak ada grup yang ditemukan untuk broadcast.' })
+    await sock.sendMessage(OWNER_NUMBER, { text: `⚠️ [${bot.id}] Tidak ada grup yang ditemukan untuk broadcast.` })
     return
   }
 
-  // Bagi ke batch
   const batches = []
   for (let i = 0; i < allGroups.length; i += BATCH_SIZE) {
     batches.push(allGroups.slice(i, i + BATCH_SIZE))
@@ -79,46 +102,53 @@ async function broadcastAll(sock) {
 
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i]
-    await sock.sendMessage(OWNER_NUMBER, { text: `📢 Mulai kirim batch ${i + 1} dari ${batches.length}, ukuran batch: ${batch.length}` })
-    await sendBatch(sock, batch, currentText)
-    await sock.sendMessage(OWNER_NUMBER, { text: `✅ Batch ${i + 1} selesai dikirim.` })
-    if (i < batches.length - 1) await delay(2000) // delay 2 detik antar batch
+    await sock.sendMessage(OWNER_NUMBER, { text: `📢 [${bot.id}] Mulai kirim batch ${i + 1} dari ${batches.length}, batch size: ${batch.length}` })
+    await sendBatch(sock, batch, bot.currentText, bot)
+    await sock.sendMessage(OWNER_NUMBER, { text: `✅ [${bot.id}] Batch ${i + 1} selesai.` })
+    if (i < batches.length - 1) await delay(2000)
   }
 }
 
-// Loop broadcast dengan interval
-async function startBroadcastLoop(sock) {
-  if (broadcastTimeout) clearTimeout(broadcastTimeout)
+async function startBroadcastLoop(sock, bot) {
+  if (bot.broadcastTimeout) clearTimeout(bot.broadcastTimeout)
+  if (!bot.broadcastActive) return
 
-  if (!broadcastActive) return
-
-  await broadcastAll(sock)
-  broadcastTimeout = setTimeout(() => startBroadcastLoop(sock), currentIntervalMs)
+  await broadcastAll(sock, bot)
+  bot.broadcastTimeout = setTimeout(() => startBroadcastLoop(sock, bot), bot.currentIntervalMs)
 }
 
-// ====== START BOT ======
-const startBot = async () => {
-  const { state, saveCreds } = await useMultiFileAuthState('session')
+// Load config semua bot sebelum start
+bots.forEach(loadConfig)
+
+// Start socket dan logic bot per bot
+async function startBotInstance(bot) {
+  const { state, saveCreds } = await useMultiFileAuthState(bot.sessionFolder)
   const { version } = await fetchLatestBaileysVersion()
 
   const sock = makeWASocket({
     version,
     auth: state,
-    logger: pino({ level: 'silent' })
+    logger: pino({ level: 'silent' }),
+    msgRetryCounterCache: {},
+    generateHighQualityLinkPreview: false,
+    markOnlineOnConnect: false,
+    syncFullHistory: false,
+    getMessage: async () => undefined
   })
 
   sock.ev.on('creds.update', saveCreds)
 
-  // Refresh group cache
+  // Refresh group cache untuk bot ini
   let isRefreshing = false
-  const refreshGroups = async () => {
+  async function refreshGroups() {
     if (isRefreshing) return
     isRefreshing = true
     try {
-      groupCache = await sock.groupFetchAllParticipating()
-      console.log(`🔄 Cache grup diperbarui: ${Object.keys(groupCache).length} grup`)
-    } catch (err) {
-      console.error('Gagal refresh group cache:', err.message)
+      const groups = await sock.groupFetchAllParticipating()
+      bot.groupCache = groups
+      console.log(`🔄 [${bot.id}] Cache grup diperbarui: ${Object.keys(groups).length} grup`)
+    } catch (e) {
+      console.error(`[${bot.id}] Gagal refresh group cache:`, e.message)
     }
     isRefreshing = false
   }
@@ -134,26 +164,25 @@ const startBot = async () => {
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
       console.clear()
-      console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR:\n`)
+      console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR [${bot.id}]:\n`)
       qrcode.generate(qr, { small: true })
     }
-
     if (connection === 'open') {
-      console.log('✅ Bot aktif')
+      console.log(`✅ [${bot.id}] Bot aktif`)
       await refreshGroups()
-      await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
+      await sock.sendMessage(OWNER_NUMBER, { text: `✅ [${bot.id}] Bot siap menerima perintah.` })
 
-      if (broadcastActive) {
-        await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
-        startBroadcastLoop(sock)
+      // Mulai broadcast loop kalau aktif
+      if (bot.broadcastActive) {
+        await sock.sendMessage(OWNER_NUMBER, { text: `♻️ [${bot.id}] Melanjutkan broadcast...\nInterval: ${humanInterval(bot.currentIntervalMs)}` })
+        startBroadcastLoop(sock, bot)
       }
     }
-
     if (connection === 'close') {
       const reason = lastDisconnect?.error?.output?.statusCode
       if (reason !== DisconnectReason.loggedOut) {
-        console.log('🔁 Reconnecting in 5 seconds...')
-        setTimeout(() => startBot(), 5000)
+        console.log(`🔁 [${bot.id}] Reconnecting in 5 seconds...`)
+        setTimeout(() => startBotInstance(bot), 5000)
       } else {
         process.exit(1)
       }
@@ -163,102 +192,125 @@ const startBot = async () => {
   sock.ev.on('groups.update', debounceRefreshGroups)
   sock.ev.on('group-participants.update', debounceRefreshGroups)
 
-  // Handle messages dari owner
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
     if (!msg.message || msg.key.fromMe) return
 
-    const jid = msg.key.remoteJid || ''
-    const fromOwner = jid === OWNER_NUMBER
-    const isGroup = jid.endsWith('.g.us')
+    const fromJid = msg.key.remoteJid || ''
+    const isFromControlGroup = fromJid === CONTROL_GROUP_JID
+    const isFromOwner = fromJid === OWNER_NUMBER
 
-    if (isGroup && !fromOwner) return
-    if (!fromOwner) return
+    if (!isFromControlGroup && !isFromOwner) return
 
     try {
-      const teks = msg.message.conversation
+      const rawText = msg.message.conversation
         || msg.message?.extendedTextMessage?.text
         || msg.message?.imageMessage?.caption
         || ''
 
-      const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
+      if (isFromControlGroup) {
+        const prefixMatch = rawText.match(/^#(\w+)\s+(.*)$/)
+        if (!prefixMatch) return
+        const botId = prefixMatch[1].toUpperCase()
+        const commandText = prefixMatch[2].trim()
 
-      if (teks.startsWith('.teks ')) {
-        currentText = teks.slice(9).trim()
-        saveConfig()
-        return reply('✅ Pesan disimpan.')
-      }
+        if (botId !== bot.id) return // hanya proses perintah untuk bot ini
 
-      if (teks.startsWith('.setinterval ')) {
-        const val = parseInterval(teks.slice(13).trim())
-        if (!val) return reply('❌ Format salah. Contoh: `.setinterval 5m`')
-        currentIntervalMs = val
-        saveConfig()
-        return reply(`✅ Interval diset: ${humanInterval(val)}`)
-      }
-      if (teks === '.variasi on') {
-        variatetextActive = true
-        saveConfig()
-        return reply('✅ Variasi teks diaktifkan.')
-        }
-
-      if (teks === '.variasi off') {
-        variatetextActive = false
-        saveConfig()
-        return reply('✅ Variasi teks dinonaktifkan.')
-        }
-
-      if (teks === '.start') {
-        if (!currentText) return reply('❌ Set pesan dulu dengan `.settext`')
-        if (broadcastActive) return reply('❌ Broadcast sudah aktif.')
-        broadcastActive = true
-        saveConfig()
-        startBroadcastLoop(sock)
-        return
-      }
-
-      if (teks === '.stop') {
-        if (!broadcastActive) return reply('❌ Broadcast belum aktif.')
-        broadcastActive = false
-        if (broadcastTimeout) clearTimeout(broadcastTimeout)
-        saveConfig()
-        return reply('🛑 Broadcast dihentikan.')
-      }
-
-      if (teks === '.status') {
-        return reply(`📊 Status:\n\nAktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(currentIntervalMs)}\nVariasi : ${variatetextActive ? '✅ Aktif' : '❌ Mati'}\nPesan: ${currentText || '⚠️ Belum diset!'}`)
-      }
-
-      if (teks === '.totalgrup') {
-        return reply(`📦 Total grup: ${Object.keys(groupCache).length}`)
-      }
-
-      if (teks.startsWith('.join ')) {
-        const links = teks.match(/https:\/\/chat\.whatsapp\.com\/[0-9A-Za-z]+/g)
-        if (!links) return reply('❌ Tidak ada link grup yang valid.')
-
-        for (const link of links) {
-          const code = link.split('/').pop()
-          try {
-            await sock.groupAcceptInvite(code)
-            await refreshGroups()
-            await reply(`✅ Berhasil join grup:\n${link}`)
-          } catch (err) {
-            await reply(`❌ Gagal join grup:\n${link}\nAlasan: ${err.message}`)
-          }
-          await delay(3000)
-        }
-        return
+        await handleCommand(sock, bot, commandText)
+      } else if (isFromOwner) {
+        // Owner private chat kirim perintah ke semua bot
+        await handleCommand(sock, bot, rawText)
       }
     } catch (e) {
       if (e.message && e.message.includes('Failed decrypt')) {
-        console.warn('⚠️ Gagal decrypt pesan.')
-        await sock.sendMessage(OWNER_NUMBER, { text: '⚠️ Pesan gagal didekripsi, mohon kirim ulang.' }).catch(() => {})
+        console.warn(`⚠️ [${bot.id}] Gagal decrypt pesan.`)
+        await sock.sendMessage(OWNER_NUMBER, { text: `⚠️ [${bot.id}] Pesan gagal didekripsi, mohon kirim ulang.` }).catch(() => {})
       } else {
-        console.error('Error di messages.upsert:', e)
+        console.error(`[${bot.id}] Error di messages.upsert:`, e)
       }
     }
   })
+
+  async function handleCommand(sock, bot, teks) {
+    const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text: `[${bot.id}] ${text}` })
+
+    if (teks.startsWith('.teks ')) {
+      bot.currentText = teks.slice(6).trim()
+      saveConfig(bot)
+      return reply('✅ Pesan disimpan.')
+    }
+
+    if (teks.startsWith('.setinterval ')) {
+      const val = parseInterval(teks.slice(13).trim())
+      if (!val) return reply('❌ Format salah. Contoh: `.setinterval 5m`')
+      bot.currentIntervalMs = val
+      saveConfig(bot)
+      return reply(`✅ Interval diset: ${humanInterval(val)}`)
+    }
+
+    if (teks === '.variasi on') {
+      bot.variateTextActive = true
+      saveConfig(bot)
+      return reply('✅ Variasi teks diaktifkan.')
+    }
+
+    if (teks === '.variasi off') {
+      bot.variateTextActive = false
+      saveConfig(bot)
+      return reply('✅ Variasi teks dinonaktifkan.')
+    }
+
+    if (teks === '.start') {
+      if (!bot.currentText) return reply('❌ Set pesan dulu dengan `.teks <pesan>`')
+      if (bot.broadcastActive) return reply('❌ Broadcast sudah aktif.')
+      bot.broadcastActive = true
+      saveConfig(bot)
+      startBroadcastLoop(sock, bot)
+      return
+    }
+
+    if (teks === '.stop') {
+      if (!bot.broadcastActive) return reply('❌ Broadcast belum aktif.')
+      bot.broadcastActive = false
+      if (bot.broadcastTimeout) clearTimeout(bot.broadcastTimeout)
+      saveConfig(bot)
+      return reply('🛑 Broadcast dihentikan.')
+    }
+
+    if (teks === '.status') {
+      return reply(`📊 Status:\n\nAktif: ${bot.broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(bot.currentIntervalMs)}\nVariasi: ${bot.variateTextActive ? '✅ Aktif' : '❌ Mati'}\nPesan: ${bot.currentText || '⚠️ Belum diset!'}`)
+    }
+
+    if (teks === '.totalgrup') {
+      return reply(`📦 Total grup: ${Object.keys(bot.groupCache).length}`)
+    }
+
+    if (teks.startsWith('.join ')) {
+      const links = teks.match(/https:\/\/chat\.whatsapp\.com\/[0-9A-Za-z]+/g)
+      if (!links) return reply('❌ Tidak ada link grup yang valid.')
+
+      for (const link of links) {
+        const code = link.split('/').pop()
+        try {
+          await sock.groupAcceptInvite(code)
+          await refreshGroups()
+          await reply(`✅ Berhasil join grup:\n${link}`)
+        } catch (err) {
+          await reply(`❌ Gagal join grup:\n${link}\nAlasan: ${err.message}`)
+        }
+        await delay(3000)
+      }
+      return
+    }
+
+    reply('❌ Perintah tidak dikenali.')
+  }
 }
 
-startBot()
+async function startAllBots() {
+  for (const bot of bots) {
+    startBotInstance(bot)
+  }
+}
+
+startAllBots()
