@@ -1,6 +1,7 @@
 process.env.BAILEYS_NO_LOG = 'true'
 
 const fs = require('fs')
+const path = require('path')
 const pino = require('pino')
 const qrcode = require('qrcode-terminal')
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
@@ -195,6 +196,12 @@ const startBot = async () => {
   let lastDecryptWarn = 0
   const decryptWarnInterval = 60 * 1000 // 1 menit
 
+  // Untuk tracking error decrypt banyak dalam 1 menit
+  let decryptErrorCount = 0
+  let decryptErrorResetTimeout = null
+  const DECRYPT_ERROR_THRESHOLD = 5
+  const DECRYPT_ERROR_RESET_TIME = 60000 // 1 menit
+
   // Handle messages dari owner saja
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
@@ -214,6 +221,15 @@ const startBot = async () => {
         || ''
 
       const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
+
+      // Reset decrypt error count jika pesan berhasil diproses
+      if (decryptErrorCount > 0) {
+        decryptErrorCount = 0
+        if (decryptErrorResetTimeout) {
+          clearTimeout(decryptErrorResetTimeout)
+          decryptErrorResetTimeout = null
+        }
+      }
 
       if (teks.startsWith('.teks ')) {
         currentText = teks.slice(6).trim()
@@ -263,12 +279,37 @@ const startBot = async () => {
       }
     } catch (e) {
       if (e.message && e.message.includes('Failed decrypt')) {
-        console.warn('⚠️ Gagal decrypt pesan.')
+        decryptErrorCount++
+
+        // Reset count tiap 1 menit
+        if (decryptErrorResetTimeout) clearTimeout(decryptErrorResetTimeout)
+        decryptErrorResetTimeout = setTimeout(() => {
+          decryptErrorCount = 0
+        }, DECRYPT_ERROR_RESET_TIME)
+
+        console.warn(`⚠️ Gagal decrypt pesan ke-${decryptErrorCount}`)
+
+        if (decryptErrorCount >= DECRYPT_ERROR_THRESHOLD) {
+          console.error('❌ Terlalu banyak error decrypt, reset session dan restart bot...')
+
+          try {
+            fs.rmSync(path.resolve('./session'), { recursive: true, force: true })
+          } catch (err) {
+            console.error('Gagal hapus folder session:', err)
+          }
+
+          process.exit(1) // biar pm2 restart
+        }
+
+        // Kirim peringatan ke owner maksimal 1 menit sekali
         const now = Date.now()
         if (now - lastDecryptWarn > decryptWarnInterval) {
           lastDecryptWarn = now
           await sock.sendMessage(OWNER_NUMBER, { text: '⚠️ Pesan gagal didekripsi, mohon kirim ulang.' }).catch(() => {})
         }
+
+        // Skip pesan error tanpa crash / lanjutkan
+        return
       } else {
         console.error('Error di messages.upsert:', e)
       }
