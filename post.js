@@ -90,20 +90,40 @@ async function broadcastAll(sock) {
 
     batch.forEach(jid => sentGroups.add(jid))
 
-    await refreshGroups(sock)
+    await refreshGroups(sock) // refresh cache setelah batch selesai
 
     await delay(2000)
   }
 }
 
-// Loop broadcast dengan interval
+// Flag untuk menghindari multiple broadcast loops
+let isBroadcastRunning = false
+
+// Loop broadcast dengan interval & update cache hanya di start & interval
 async function startBroadcastLoop(sock) {
   if (broadcastTimeout) clearTimeout(broadcastTimeout)
+  if (isBroadcastRunning) return
+  isBroadcastRunning = true
 
-  if (!broadcastActive) return
+  // Refresh grup sekali saat start loop
+  await refreshGroups(sock)
 
-  await broadcastAll(sock)
-  broadcastTimeout = setTimeout(() => startBroadcastLoop(sock), currentIntervalMs)
+  async function loop() {
+    if (!broadcastActive) {
+      isBroadcastRunning = false
+      return
+    }
+
+    await broadcastAll(sock)
+
+    await delay(currentIntervalMs)
+
+    await refreshGroups(sock)
+
+    loop()
+  }
+
+  loop()
 }
 
 // ====== START BOT ======
@@ -119,13 +139,18 @@ const startBot = async () => {
 
   sock.ev.on('creds.update', saveCreds)
 
-  let isRefreshing = false
-  const refreshGroupsDebounced = async () => {
-    if (isRefreshing) return
-    isRefreshing = true
-    await refreshGroups(sock)
-    isRefreshing = false
-  }
+  // Hapus event refresh debounced supaya cache grup tidak update terus-menerus
+  // sock.ev.on('groups.update', refreshGroupsDebounced)
+  // sock.ev.on('group-participants.update', refreshGroupsDebounced)
+
+  // Event: bot masuk grup baru → refresh cache grup
+  sock.ev.on('group-participants.update', async (update) => {
+    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net'
+    if (update.action === 'add' && update.participants.includes(botId)) {
+      console.log(`🤖 Bot masuk grup baru: ${update.id}`)
+      await refreshGroups(sock)
+    }
+  })
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
@@ -136,7 +161,7 @@ const startBot = async () => {
 
     if (connection === 'open') {
       console.log('✅ Bot aktif')
-      await refreshGroups(sock)
+      // Jangan refreshGroups di sini karena sudah di startBroadcastLoop
       await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
 
       if (broadcastActive) {
@@ -155,9 +180,6 @@ const startBot = async () => {
       }
     }
   })
-
-  sock.ev.on('groups.update', refreshGroupsDebounced)
-  sock.ev.on('group-participants.update', refreshGroupsDebounced)
 
   // Handle messages dari owner saja
   sock.ev.on('messages.upsert', async ({ messages }) => {
