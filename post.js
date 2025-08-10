@@ -16,6 +16,7 @@ if (fs.existsSync(CONFIG_PATH)) {
 }
 let { currentText, currentIntervalMs, broadcastActive, variatetextActive } = config
 let broadcastTimeout, groupCache = {}
+
 const saveConfig = () => fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive, variatetextActive }, null, 2))
 
 // ====== UTIL ======
@@ -46,6 +47,7 @@ const variateText = (text) => {
 const delay = ms => new Promise(res => setTimeout(res, ms))
 
 // ====== BROADCAST ======
+
 async function sendBatch(sock, batch, text) {
   for (const jid of batch) {
     try {
@@ -96,10 +98,12 @@ async function broadcastAll(sock) {
   }
 }
 
+// ====== KONEKSI ======
+let isConnected = false
+
 // Flag untuk menghindari multiple broadcast loops
 let isBroadcastRunning = false
 
-// Loop broadcast dengan interval & update cache hanya di start & interval
 async function startBroadcastLoop(sock) {
   if (broadcastTimeout) clearTimeout(broadcastTimeout)
   if (isBroadcastRunning) return
@@ -114,16 +118,22 @@ async function startBroadcastLoop(sock) {
       return
     }
 
+    if (!isConnected) {
+      console.log('⚠️ Koneksi belum siap, menunggu...')
+      await delay(5000)
+      return loop()
+    }
+
     await broadcastAll(sock)
 
     await delay(currentIntervalMs)
 
     await refreshGroups(sock)
 
-    loop()
+    return loop()
   }
 
-  loop()
+  return loop()
 }
 
 // ====== START BOT ======
@@ -138,10 +148,6 @@ const startBot = async () => {
   })
 
   sock.ev.on('creds.update', saveCreds)
-
-  // Hapus event refresh debounced supaya cache grup tidak update terus-menerus
-  // sock.ev.on('groups.update', refreshGroupsDebounced)
-  // sock.ev.on('group-participants.update', refreshGroupsDebounced)
 
   // Event: bot masuk grup baru → refresh cache grup
   sock.ev.on('group-participants.update', async (update) => {
@@ -160,8 +166,8 @@ const startBot = async () => {
     }
 
     if (connection === 'open') {
+      isConnected = true
       console.log('✅ Bot aktif')
-      // Jangan refreshGroups di sini karena sudah di startBroadcastLoop
       await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
 
       if (broadcastActive) {
@@ -171,15 +177,23 @@ const startBot = async () => {
     }
 
     if (connection === 'close') {
+      isConnected = false
       const reason = lastDisconnect?.error?.output?.statusCode
+      console.log(`❌ Connection closed, code: ${reason}`)
+
       if (reason !== DisconnectReason.loggedOut) {
         console.log('🔁 Reconnecting in 5 seconds...')
         setTimeout(() => startBot(), 5000)
       } else {
+        console.log('⚠️ Session logged out, silakan scan ulang QR')
         process.exit(1)
       }
     }
   })
+
+  // Untuk mencegah spam pesan gagal decrypt ke owner
+  let lastDecryptWarn = 0
+  const decryptWarnInterval = 60 * 1000 // 1 menit
 
   // Handle messages dari owner saja
   sock.ev.on('messages.upsert', async ({ messages }) => {
@@ -233,7 +247,7 @@ const startBot = async () => {
         broadcastActive = true
         saveConfig()
         startBroadcastLoop(sock)
-        return
+        return reply('✅ Broadcast dimulai.')
       }
 
       if (teks === '.stop') {
@@ -250,7 +264,11 @@ const startBot = async () => {
     } catch (e) {
       if (e.message && e.message.includes('Failed decrypt')) {
         console.warn('⚠️ Gagal decrypt pesan.')
-        await sock.sendMessage(OWNER_NUMBER, { text: '⚠️ Pesan gagal didekripsi, mohon kirim ulang.' }).catch(() => {})
+        const now = Date.now()
+        if (now - lastDecryptWarn > decryptWarnInterval) {
+          lastDecryptWarn = now
+          await sock.sendMessage(OWNER_NUMBER, { text: '⚠️ Pesan gagal didekripsi, mohon kirim ulang.' }).catch(() => {})
+        }
       } else {
         console.error('Error di messages.upsert:', e)
       }
