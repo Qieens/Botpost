@@ -6,20 +6,17 @@ const pino = require('pino')
 const readline = require('readline')
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
 
-const usePairingCode = true;
-
 const OWNER_NUMBER = '628975539822@s.whatsapp.net' // ganti nomor owner kamu
 const CONFIG_PATH = './config.json'
 const BATCH_SIZE = 20
 
-// ====== READLINE PROMPT =====
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout
 })
 const question = (q) => new Promise(resolve => rl.question(q, resolve))
 
-// ====== LOAD CONFIG ======
+// Load config or defaults
 let config = { currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false, variatetextActive: true }
 if (fs.existsSync(CONFIG_PATH)) {
   try { config = JSON.parse(fs.readFileSync(CONFIG_PATH)) } catch {}
@@ -29,7 +26,6 @@ let broadcastTimeout, groupCache = {}
 
 const saveConfig = () => fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive, variatetextActive }, null, 2))
 
-// ====== UTIL ======
 const parseInterval = (text) => {
   const match = text.match(/^(\d+)(s|m|h)$/i)
   if (!match) return null
@@ -55,8 +51,6 @@ const variateText = (text) => {
 }
 
 const delay = ms => new Promise(res => setTimeout(res, ms))
-
-// ====== BROADCAST ======
 
 async function sendBatch(sock, batch, text) {
   for (const jid of batch) {
@@ -102,13 +96,12 @@ async function broadcastAll(sock) {
 
     batch.forEach(jid => sentGroups.add(jid))
 
-    await refreshGroups(sock) // refresh cache setelah batch selesai
+    await refreshGroups(sock)
 
     await delay(2000)
   }
 }
 
-// ====== KONEKSI ======
 let isConnected = false
 let isBroadcastRunning = false
 
@@ -141,7 +134,6 @@ async function startBroadcastLoop(sock) {
   return loop()
 }
 
-// ====== START BOT ======
 const startBot = async () => {
   const { state, saveCreds } = await useMultiFileAuthState('session')
   const { version } = await fetchLatestBaileysVersion()
@@ -150,14 +142,12 @@ const startBot = async () => {
     version,
     auth: state,
     logger: pino({ level: 'silent' }),
-    printQRInTerminal: !usePairingCode,
+    printQRInTerminal: false,
     browser: ["Ubuntu", "Chrome", "20.0.04"],
-    version: [2, 3000, 1015901307]
   })
 
   sock.ev.on('creds.update', saveCreds)
 
-  // Pairing manual via pairing code jika belum ter-registered
   if (!state.creds.registered) {
     console.log('* Masukkan nomor dengan kode negara (contoh: 6281234567890):')
     const phoneNumber = await question('> ')
@@ -209,7 +199,6 @@ const startBot = async () => {
     }
   })
 
-  // Tracking decrypt error agar tidak spam pesan owner
   let lastDecryptWarn = 0
   const decryptWarnInterval = 60 * 1000
   let decryptErrorCount = 0
