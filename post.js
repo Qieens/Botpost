@@ -6,6 +6,8 @@ const pino = require('pino')
 const readline = require('readline')
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
 
+const usePairingCode = true;
+
 const OWNER_NUMBER = '628975539822@s.whatsapp.net' // ganti nomor owner kamu
 const CONFIG_PATH = './config.json'
 const BATCH_SIZE = 20
