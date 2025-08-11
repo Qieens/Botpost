@@ -3,12 +3,19 @@ process.env.BAILEYS_NO_LOG = 'true'
 const fs = require('fs')
 const path = require('path')
 const pino = require('pino')
-const qrcode = require('qrcode-terminal')
+const readline = require('readline')
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
 
 const OWNER_NUMBER = '628975539822@s.whatsapp.net' // ganti nomor owner kamu
 const CONFIG_PATH = './config.json'
 const BATCH_SIZE = 20
+
+// ====== READLINE PROMPT =====
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+})
+const question = (q) => new Promise(resolve => rl.question(q, resolve))
 
 // ====== LOAD CONFIG ======
 let config = { currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false, variatetextActive: true }
@@ -101,8 +108,6 @@ async function broadcastAll(sock) {
 
 // ====== KONEKSI ======
 let isConnected = false
-
-// Flag untuk menghindari multiple broadcast loops
 let isBroadcastRunning = false
 
 async function startBroadcastLoop(sock) {
@@ -110,7 +115,6 @@ async function startBroadcastLoop(sock) {
   if (isBroadcastRunning) return
   isBroadcastRunning = true
 
-  // Refresh grup sekali saat start loop
   await refreshGroups(sock)
 
   async function loop() {
@@ -126,9 +130,7 @@ async function startBroadcastLoop(sock) {
     }
 
     await broadcastAll(sock)
-
     await delay(currentIntervalMs)
-
     await refreshGroups(sock)
 
     return loop()
@@ -145,12 +147,29 @@ const startBot = async () => {
   const sock = makeWASocket({
     version,
     auth: state,
-    logger: pino({ level: 'silent' })
+    logger: pino({ level: 'silent' }),
+    printQRInTerminal: !usePairingCode,
+    browser: ["Ubuntu", "Chrome", "20.0.04"],
+    version: [2, 3000, 1015901307]
   })
 
   sock.ev.on('creds.update', saveCreds)
 
-  // Event: bot masuk grup baru → refresh cache grup
+  // Pairing manual via pairing code jika belum ter-registered
+  if (!state.creds.registered) {
+    console.log('* Masukkan nomor dengan kode negara (contoh: 6281234567890):')
+    const phoneNumber = await question('> ')
+    try {
+      const pairingCode = await sock.requestPairingCode(phoneNumber.trim())
+      console.log('\n📥 Pairing Code (scan di WhatsApp Multi-device):\n')
+      console.log(pairingCode)
+      console.log('\nScan kode ini di aplikasi WhatsApp kamu untuk login.\n')
+    } catch (err) {
+      console.error('❌ Gagal request pairing code:', err)
+      process.exit(1)
+    }
+  }
+
   sock.ev.on('group-participants.update', async (update) => {
     const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net'
     if (update.action === 'add' && update.participants.includes(botId)) {
@@ -159,20 +178,16 @@ const startBot = async () => {
     }
   })
 
-  sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
-    if (qr) {
-      console.clear()
-      console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR:\n`)
-      qrcode.generate(qr, { small: true })
-    }
-
+  sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
     if (connection === 'open') {
       isConnected = true
       console.log('✅ Bot aktif')
-      await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
+      sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' }).catch(() => {})
 
       if (broadcastActive) {
-        await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
+        sock.sendMessage(OWNER_NUMBER, {
+          text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}`,
+        }).catch(() => {})
         startBroadcastLoop(sock)
       }
     }
@@ -186,23 +201,20 @@ const startBot = async () => {
         console.log('🔁 Reconnecting in 5 seconds...')
         setTimeout(() => startBot(), 5000)
       } else {
-        console.log('⚠️ Session logged out, silakan scan ulang QR')
+        console.log('⚠️ Session logged out, silakan pairing ulang')
         process.exit(1)
       }
     }
   })
 
-  // Untuk mencegah spam pesan gagal decrypt ke owner
+  // Tracking decrypt error agar tidak spam pesan owner
   let lastDecryptWarn = 0
-  const decryptWarnInterval = 60 * 1000 // 1 menit
-
-  // Untuk tracking error decrypt banyak dalam 1 menit
+  const decryptWarnInterval = 60 * 1000
   let decryptErrorCount = 0
   let decryptErrorResetTimeout = null
   const DECRYPT_ERROR_THRESHOLD = 5
-  const DECRYPT_ERROR_RESET_TIME = 60000 // 1 menit
+  const DECRYPT_ERROR_RESET_TIME = 60000
 
-  // Handle messages dari owner saja
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
     if (!msg.message || msg.key.fromMe) return
@@ -222,7 +234,6 @@ const startBot = async () => {
 
       const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
 
-      // Reset decrypt error count jika pesan berhasil diproses
       if (decryptErrorCount > 0) {
         decryptErrorCount = 0
         if (decryptErrorResetTimeout) {
@@ -281,7 +292,6 @@ const startBot = async () => {
       if (e.message && e.message.includes('Failed decrypt')) {
         decryptErrorCount++
 
-        // Reset count tiap 1 menit
         if (decryptErrorResetTimeout) clearTimeout(decryptErrorResetTimeout)
         decryptErrorResetTimeout = setTimeout(() => {
           decryptErrorCount = 0
@@ -298,17 +308,15 @@ const startBot = async () => {
             console.error('Gagal hapus folder session:', err)
           }
 
-          process.exit(1) // biar pm2 restart
+          process.exit(1)
         }
 
-        // Kirim peringatan ke owner maksimal 1 menit sekali
         const now = Date.now()
         if (now - lastDecryptWarn > decryptWarnInterval) {
           lastDecryptWarn = now
           await sock.sendMessage(OWNER_NUMBER, { text: '⚠️ Pesan gagal didekripsi, mohon kirim ulang.' }).catch(() => {})
         }
 
-        // Skip pesan error tanpa crash / lanjutkan
         return
       } else {
         console.error('Error di messages.upsert:', e)
