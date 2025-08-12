@@ -47,7 +47,6 @@ const variateText = (text) => {
 const delay = ms => new Promise(res => setTimeout(res, ms))
 
 // ====== BROADCAST ======
-
 async function sendBatch(sock, batch, text) {
   for (const jid of batch) {
     try {
@@ -100,16 +99,12 @@ async function broadcastAll(sock) {
 
 // ====== KONEKSI ======
 let isConnected = false
-
-// Flag untuk menghindari multiple broadcast loops
 let isBroadcastRunning = false
 
 async function startBroadcastLoop(sock) {
   if (broadcastTimeout) clearTimeout(broadcastTimeout)
   if (isBroadcastRunning) return
   isBroadcastRunning = true
-
-  // Refresh grup sekali saat start loop
   await refreshGroups(sock)
 
   async function loop() {
@@ -117,19 +112,14 @@ async function startBroadcastLoop(sock) {
       isBroadcastRunning = false
       return
     }
-
     if (!isConnected) {
       console.log('⚠️ Koneksi belum siap, menunggu...')
       await delay(5000)
       return loop()
     }
-
     await broadcastAll(sock)
-
     await delay(currentIntervalMs)
-
     await refreshGroups(sock)
-
     return loop()
   }
 
@@ -149,7 +139,6 @@ const startBot = async () => {
 
   sock.ev.on('creds.update', saveCreds)
 
-  // Event: bot masuk grup baru → refresh cache grup
   sock.ev.on('group-participants.update', async (update) => {
     const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net'
     if (update.action === 'add' && update.participants.includes(botId)) {
@@ -164,23 +153,19 @@ const startBot = async () => {
       console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR:\n`)
       qrcode.generate(qr, { small: true })
     }
-
     if (connection === 'open') {
       isConnected = true
       console.log('✅ Bot aktif')
       await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
-
       if (broadcastActive) {
         await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
         startBroadcastLoop(sock)
       }
     }
-
     if (connection === 'close') {
       isConnected = false
       const reason = lastDisconnect?.error?.output?.statusCode
       console.log(`❌ Connection closed, code: ${reason}`)
-
       if (reason !== DisconnectReason.loggedOut) {
         console.log('🔁 Reconnecting in 5 seconds...')
         setTimeout(() => startBot(), 5000)
@@ -191,11 +176,9 @@ const startBot = async () => {
     }
   })
 
-  // Untuk mencegah spam pesan gagal decrypt ke owner
   let lastDecryptWarn = 0
-  const decryptWarnInterval = 60 * 1000 // 1 menit
+  const decryptWarnInterval = 60 * 1000
 
-  // Handle messages dari owner saja
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
     if (!msg.message || msg.key.fromMe) return
@@ -215,12 +198,24 @@ const startBot = async () => {
 
       const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
 
+      // ===== Command Join Grup =====
+      if (teks.startsWith('.join ')) {
+        const link = teks.split(' ')[1]
+        if (!link || !link.includes('whatsapp.com')) return reply('❌ Format salah. Contoh: `.join https://chat.whatsapp.com/xxxxx`')
+        const code = link.split('/').pop()
+        try {
+          await sock.groupAcceptInvite(code)
+          return reply('✅ Berhasil masuk grup.')
+        } catch (err) {
+          return reply('❌ Gagal masuk grup: ' + err.message)
+        }
+      }
+
       if (teks.startsWith('.teks ')) {
         currentText = teks.slice(6).trim()
         saveConfig()
         return reply('✅ Pesan disimpan.')
       }
-
       if (teks.startsWith('.setinterval ')) {
         const val = parseInterval(teks.slice(13).trim())
         if (!val) return reply('❌ Format salah. Contoh: `.setinterval 5m`')
@@ -228,19 +223,16 @@ const startBot = async () => {
         saveConfig()
         return reply(`✅ Interval diset: ${humanInterval(val)}`)
       }
-
       if (teks === '.variasi on') {
         variatetextActive = true
         saveConfig()
         return reply('✅ Variasi teks diaktifkan.')
       }
-
       if (teks === '.variasi off') {
         variatetextActive = false
         saveConfig()
         return reply('✅ Variasi teks dinonaktifkan.')
       }
-
       if (teks === '.start') {
         if (!currentText) return reply('❌ Set pesan dulu dengan `.teks <pesan>`')
         if (broadcastActive) return reply('❌ Broadcast sudah aktif.')
@@ -249,7 +241,6 @@ const startBot = async () => {
         startBroadcastLoop(sock)
         return reply('✅ Broadcast dimulai.')
       }
-
       if (teks === '.stop') {
         if (!broadcastActive) return reply('❌ Broadcast belum aktif.')
         broadcastActive = false
@@ -257,7 +248,6 @@ const startBot = async () => {
         saveConfig()
         return reply('🛑 Broadcast dihentikan.')
       }
-
       if (teks === '.status') {
         return reply(`📊 Status:\n\nAktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(currentIntervalMs)}\nVariasi : ${variatetextActive ? '✅ Aktif' : '❌ Mati'}\nPesan: ${currentText || '⚠️ Belum diset!'}`)
       }
