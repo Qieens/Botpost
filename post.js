@@ -1,25 +1,34 @@
 process.env.BAILEYS_NO_LOG = 'true'
 
 const fs = require('fs')
+const os = require('os')
 const pino = require('pino')
+const chalk = require('chalk')
 const qrcode = require('qrcode-terminal')
-const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys')
+const { default: WAConnection, useMultiFileAuthState, Browsers, DisconnectReason, makeCacheableSignalKeyStore, fetchLatestBaileysVersion, jidNormalizedUser } = require('@whiskeysockets/baileys')
+const { dataBase } = require('./src/database') // sesuaikan path db mu
+const { GroupParticipantsUpdate, MessagesUpsert } = require('./src/message') // handler grup & pesan mu
+const { exec } = require('child_process')
 
-const OWNER_NUMBER = '628975539822@s.whatsapp.net' // ganti nomor owner kamu
+// ========== CONFIG ===========
+const OWNER_NUMBER = '628975539822@s.whatsapp.net' // ganti owner nomor kamu
 const CONFIG_PATH = './config.json'
 const BATCH_SIZE = 20
 
 // ====== LOAD CONFIG ======
-let config = { currentText: '', currentIntervalMs: 5 * 60 * 1000, broadcastActive: false, variatetextActive: true }
+let config = {
+  currentText: '',
+  currentIntervalMs: 5 * 60 * 1000,
+  broadcastActive: false,
+  variatetextActive: true
+}
 if (fs.existsSync(CONFIG_PATH)) {
   try { config = JSON.parse(fs.readFileSync(CONFIG_PATH)) } catch {}
 }
 let { currentText, currentIntervalMs, broadcastActive, variatetextActive } = config
-let broadcastTimeout, groupCache = {}
-
 const saveConfig = () => fs.writeFileSync(CONFIG_PATH, JSON.stringify({ currentText, currentIntervalMs, broadcastActive, variatetextActive }, null, 2))
 
-// ====== UTIL ======
+// ====== UTILS ======
 const parseInterval = (text) => {
   const match = text.match(/^(\d+)(s|m|h)$/i)
   if (!match) return null
@@ -46,7 +55,38 @@ const variateText = (text) => {
 
 const delay = ms => new Promise(res => setTimeout(res, ms))
 
-// ====== BROADCAST ======
+// ====== DATABASES =======
+const storeDB = dataBase(global.tempatStore)
+const database = dataBase(global.tempatDB)
+
+let globalStore = {}
+let globalDB = {}
+
+async function loadDBs() {
+  const loadData = await database.read()
+  const storeLoadData = await storeDB.read()
+  globalDB = loadData && Object.keys(loadData).length > 0 ? loadData : {
+    hit: {}, set: {}, cmd: {}, store: {}, users: {}, game: {}, groups: {}, database: {}, premium: [], sewa: []
+  }
+  globalStore = storeLoadData && Object.keys(storeLoadData).length > 0 ? storeLoadData : {
+    contacts: {}, presences: {}, messages: {}, groupMetadata: {}
+  }
+}
+
+// ====== BROADCAST SYSTEM =======
+let broadcastTimeout
+let isBroadcastRunning = false
+let groupCache = {}
+
+async function refreshGroups(sock) {
+  try {
+    groupCache = await sock.groupFetchAllParticipating()
+    console.log(`🔄 Cache grup diperbarui: ${Object.keys(groupCache).length} grup`)
+  } catch (err) {
+    console.error('Gagal refresh group cache:', err.message)
+  }
+}
+
 async function sendBatch(sock, batch, text) {
   for (const jid of batch) {
     try {
@@ -56,15 +96,6 @@ async function sendBatch(sock, batch, text) {
     } catch (err) {
       console.error(`❌ Gagal broadcast ke ${jid}:`, err.message)
     }
-  }
-}
-
-async function refreshGroups(sock) {
-  try {
-    groupCache = await sock.groupFetchAllParticipating()
-    console.log(`🔄 Cache grup diperbarui: ${Object.keys(groupCache).length} grup`)
-  } catch (err) {
-    console.error('Gagal refresh group cache:', err.message)
   }
 }
 
@@ -91,15 +122,10 @@ async function broadcastAll(sock) {
 
     batch.forEach(jid => sentGroups.add(jid))
 
-    await refreshGroups(sock) // refresh cache setelah batch selesai
-
+    await refreshGroups(sock)
     await delay(2000)
   }
 }
-
-// ====== KONEKSI ======
-let isConnected = false
-let isBroadcastRunning = false
 
 async function startBroadcastLoop(sock) {
   if (broadcastTimeout) clearTimeout(broadcastTimeout)
@@ -112,11 +138,6 @@ async function startBroadcastLoop(sock) {
       isBroadcastRunning = false
       return
     }
-    if (!isConnected) {
-      console.log('⚠️ Koneksi belum siap, menunggu...')
-      await delay(5000)
-      return loop()
-    }
     await broadcastAll(sock)
     await delay(currentIntervalMs)
     await refreshGroups(sock)
@@ -126,60 +147,100 @@ async function startBroadcastLoop(sock) {
   return loop()
 }
 
-// ====== START BOT ======
-const startBot = async () => {
-  const { state, saveCreds } = await useMultiFileAuthState('session')
-  const { version } = await fetchLatestBaileysVersion()
+// ====== BOT START ======
+async function startNazeBot() {
+  await loadDBs()
+  // auto save interval
+  setInterval(async () => {
+    if (globalDB) await database.write(globalDB)
+    if (globalStore) await storeDB.write(globalStore)
+  }, 30 * 1000)
 
-  const sock = makeWASocket({
-    version,
-    auth: state,
-    logger: pino({ level: 'silent' })
-  })
+  const { state, saveCreds } = await useMultiFileAuthState('nazedev')
+  const { version, isLatest } = await fetchLatestBaileysVersion()
+  const level = pino({ level: 'silent' })
 
-  sock.ev.on('creds.update', saveCreds)
-
-  sock.ev.on('group-participants.update', async (update) => {
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net'
-    if (update.action === 'add' && update.participants.includes(botId)) {
-      console.log(`🤖 Bot masuk grup baru: ${update.id}`)
-      await refreshGroups(sock)
+  // pesan getter untuk store
+  globalStore.loadMessage = function (remoteJid, id) {
+    const messages = globalStore.messages?.[remoteJid]?.array
+    if (!messages) return null
+    return messages.find(msg => msg?.key?.id === id) || null
+  }
+  const getMessage = async (key) => {
+    if (globalStore) {
+      const msg = await globalStore.loadMessage(key.remoteJid, key.id)
+      return msg?.message || ''
     }
+    return { conversation: 'Halo Saya Naze Bot' }
+  }
+
+  const naze = WAConnection({
+    logger: level,
+    getMessage,
+    syncFullHistory: true,
+    maxMsgRetryCount: 15,
+    retryRequestDelayMs: 10,
+    defaultQueryTimeoutMs: 0,
+    connectTimeoutMs: 60000,
+    browser: Browsers.ubuntu('Chrome'),
+    generateHighQualityLinkPreview: true,
+    shouldSyncHistoryMessage: msg => !!msg.syncType,
+    transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 10 },
+    appStateMacVerification: { patch: true, snapshot: true },
+    auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, level) },
   })
 
-  sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+  naze.ev.on('creds.update', saveCreds)
+
+  naze.ev.on('connection.update', async (update) => {
+    const { qr, connection, lastDisconnect, isNewLogin } = update
     if (qr) {
       console.clear()
       console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR:\n`)
       qrcode.generate(qr, { small: true })
     }
     if (connection === 'open') {
-      isConnected = true
-      console.log('✅ Bot aktif')
-      await sock.sendMessage(OWNER_NUMBER, { text: '✅ Bot siap menerima perintah.' })
+      console.log('✅ Bot connected')
       if (broadcastActive) {
-        await sock.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
-        startBroadcastLoop(sock)
+        await naze.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
+        startBroadcastLoop(naze)
       }
     }
     if (connection === 'close') {
-      isConnected = false
-      const reason = lastDisconnect?.error?.output?.statusCode
+      const reason = new Boom(lastDisconnect?.error)?.output.statusCode
       console.log(`❌ Connection closed, code: ${reason}`)
       if (reason !== DisconnectReason.loggedOut) {
         console.log('🔁 Reconnecting in 5 seconds...')
-        setTimeout(() => startBot(), 5000)
+        setTimeout(() => startNazeBot(), 5000)
       } else {
         console.log('⚠️ Session logged out, silakan scan ulang QR')
+        exec('rm -rf ./nazedev/*')
         process.exit(1)
       }
     }
   })
 
+  naze.ev.on('group-participants.update', async (update) => {
+    await GroupParticipantsUpdate(naze, update, globalStore)
+    await refreshGroups(naze)
+  })
+
+  naze.ev.on('groups.update', (updates) => {
+    for (const update of updates) {
+      if (globalStore.groupMetadata[update.id]) Object.assign(globalStore.groupMetadata[update.id], update)
+      else globalStore.groupMetadata[update.id] = update
+    }
+  })
+
+  naze.ev.on('presence.update', ({ id, presences: update }) => {
+    globalStore.presences[id] = globalStore.presences?.[id] || {}
+    Object.assign(globalStore.presences[id], update)
+  })
+
   let lastDecryptWarn = 0
   const decryptWarnInterval = 60 * 1000
 
-  sock.ev.on('messages.upsert', async ({ messages }) => {
+  naze.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
     if (!msg.message || msg.key.fromMe) return
 
@@ -196,32 +257,33 @@ const startBot = async () => {
         || msg.message?.imageMessage?.caption
         || ''
 
-      const reply = (text) => sock.sendMessage(OWNER_NUMBER, { text })
+      const reply = (text) => naze.sendMessage(OWNER_NUMBER, { text })
 
-      // ===== Command Join Grup =====
+      // Command Join Grup
       if (teks.startsWith('.join ')) {
         const link = teks.split(' ')[1]
         if (!link || !link.includes('whatsapp.com')) return reply('❌ Format salah. Contoh: `.join https://chat.whatsapp.com/xxxxx`')
         const code = link.split('/').pop()
         try {
-          await sock.groupAcceptInvite(code)
+          await naze.groupAcceptInvite(code)
           return reply('✅ Berhasil masuk grup.')
         } catch (err) {
           return reply('❌ Gagal masuk grup: ' + err.message)
         }
       }
 
+      // Broadcast commands
       if (teks.startsWith('.teks ')) {
         currentText = teks.slice(6).trim()
         saveConfig()
-        return reply('✅ Pesan disimpan.')
+        return reply('✅ Pesan broadcast disimpan.')
       }
       if (teks.startsWith('.setinterval ')) {
         const val = parseInterval(teks.slice(13).trim())
         if (!val) return reply('❌ Format salah. Contoh: `.setinterval 5m`')
         currentIntervalMs = val
         saveConfig()
-        return reply(`✅ Interval diset: ${humanInterval(val)}`)
+        return reply(`✅ Interval broadcast diset: ${humanInterval(val)}`)
       }
       if (teks === '.variasi on') {
         variatetextActive = true
@@ -238,7 +300,7 @@ const startBot = async () => {
         if (broadcastActive) return reply('❌ Broadcast sudah aktif.')
         broadcastActive = true
         saveConfig()
-        startBroadcastLoop(sock)
+        startBroadcastLoop(naze)
         return reply('✅ Broadcast dimulai.')
       }
       if (teks === '.stop') {
@@ -249,21 +311,46 @@ const startBot = async () => {
         return reply('🛑 Broadcast dihentikan.')
       }
       if (teks === '.status') {
-        return reply(`📊 Status:\n\nAktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(currentIntervalMs)}\nVariasi : ${variatetextActive ? '✅ Aktif' : '❌ Mati'}\nPesan: ${currentText || '⚠️ Belum diset!'}`)
+        return reply(`📊 Status Broadcast:\n\nAktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(currentIntervalMs)}\nVariasi : ${variatetextActive ? '✅ Aktif' : '❌ Mati'}\nPesan: ${currentText || '⚠️ Belum diset!'}`)
       }
+
+      // proses pesan untuk logic lain (bisa panggil handler-mu)
+      await MessagesUpsert(naze, { messages }, globalStore)
+
     } catch (e) {
       if (e.message && e.message.includes('Failed decrypt')) {
         console.warn('⚠️ Gagal decrypt pesan.')
         const now = Date.now()
         if (now - lastDecryptWarn > decryptWarnInterval) {
           lastDecryptWarn = now
-          await sock.sendMessage(OWNER_NUMBER, { text: '⚠️ Pesan gagal didekripsi, mohon kirim ulang.' }).catch(() => {})
+          await naze.sendMessage(OWNER_NUMBER, { text: '⚠️ Pesan gagal didekripsi, mohon kirim ulang.' }).catch(() => {})
         }
       } else {
         console.error('Error di messages.upsert:', e)
       }
     }
   })
+
+  // Periodic presence update supaya online
+  setInterval(async () => {
+    if (naze?.user?.id) await naze.sendPresenceUpdate('available', naze.decodeJid(naze.user.id)).catch(() => {})
+  }, 10 * 60 * 1000)
+
+  return naze
 }
 
-startBot()
+startNazeBot()
+
+// Process exit handlers supaya simpan DB & close server (kalau ada server)
+process.on('SIGINT', async () => {
+  console.log('SIGINT diterima, menyimpan database...')
+  if (globalDB) await database.write(globalDB)
+  if (globalStore) await storeDB.write(globalStore)
+  process.exit(0)
+})
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM diterima, menyimpan database...')
+  if (globalDB) await database.write(globalDB)
+  if (globalStore) await storeDB.write(globalStore)
+  process.exit(0)
+})
