@@ -8,31 +8,10 @@ const {
 const pino = require("pino");
 const fs = require("fs");
 
-// =============================
-// KONFIGURASI
-// =============================
 const PROMO_FILE = "promo.txt";
 const DELAY_ANTAR_GRUP = 2000;
 const DELAY_LOOP = 10 * 60 * 1000;
-// =============================
 
-// =============================
-// FUNGSI LOGIN PAIRING CODE
-// =============================
-async function loginWithCode(sock) {
-    console.log("\n🔑 MEMBUAT KODE LOGIN...");
-
-    const code = await sock.requestPairingCode(process.env.LOGIN_NUMBER);
-
-    console.log("\n📌 MASUKKAN KODE INI DI WHATSAPP:");
-    console.log("=======================================");
-    console.log(`       🔐  ${code}  🔐`);
-    console.log("=======================================\n");
-}
-
-// =============================
-// AUTO BROADCAST LOOP
-// =============================
 async function autoLoop(sock) {
     while (true) {
         console.log("\n🔁 MEMULAI BROADCAST BARU...");
@@ -58,9 +37,6 @@ async function autoLoop(sock) {
     }
 }
 
-// =============================
-// START BOT
-// =============================
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState("./session");
     const { version } = await fetchLatestBaileysVersion();
@@ -70,31 +46,30 @@ async function startBot() {
         auth: state,
         version,
         printQRInTerminal: false,
-        browser: ["Ubuntu", "Chrome", "110.0"]
     });
 
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", async (update) => {
-        const { connection } = update;
+        const { connection, lastDisconnect, pairingCode } = update;
 
-        // TRIGGER PAIRING SAAT "connecting"
-        if (!state.creds.registered && connection === "connecting") {
-            if (!process.env.LOGIN_NUMBER) {
-                console.log("\n❌ Set dulu nomor login:");
-                console.log("LOGIN_NUMBER='628xxxxxx' node post.js\n");
-                process.exit(0);
-            }
-            await loginWithCode(sock);
+        // 🔐 Auto pairing code resmi dan stabil
+        if (!state.creds.registered && pairingCode) {
+            console.log("\n📌 MASUKKAN KODE LOGIN DI WHATSAPP");
+            console.log("=======================================");
+            console.log(`       🔐  ${pairingCode}  🔐`);
+            console.log("=======================================\n");
         }
 
         if (connection === "open") {
-            console.log("✅ BOT TERHUBUNG\n");
+            console.log("✅ BOT TERHUBUNG");
             setTimeout(() => autoLoop(sock), 2000);
         }
 
         if (connection === "close") {
-            console.log("❌ Koneksi terputus. Restarting...");
+            const reason = lastDisconnect?.error?.output?.statusCode;
+            console.log("❌ Koneksi terputus:", reason);
+            console.log("🔄 Restarting...");
             setTimeout(startBot, 3000);
         }
     });
