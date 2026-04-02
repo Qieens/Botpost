@@ -22,12 +22,6 @@ const DELAY_LOOP = 10 * 60 * 1000;
 async function loginWithCode(sock) {
     console.log("\n🔑 MEMBUAT KODE LOGIN...");
 
-    // Pastikan socket siap sebelum request pairing
-    while (!sock.ws || sock.ws.readyState !== 1) {
-        console.log("⏳ Menunggu koneksi siap...");
-        await delay(500);
-    }
-
     const code = await sock.requestPairingCode(process.env.LOGIN_NUMBER);
 
     console.log("\n📌 MASUKKAN KODE INI DI WHATSAPP:");
@@ -44,7 +38,6 @@ async function autoLoop(sock) {
         console.log("\n🔁 MEMULAI BROADCAST BARU...");
 
         const message = fs.readFileSync(PROMO_FILE, "utf8").trim();
-
         const groups = await sock.groupFetchAllParticipating();
         const groupIds = Object.keys(groups);
 
@@ -82,18 +75,18 @@ async function startBot() {
 
     sock.ev.on("creds.update", saveCreds);
 
-    // Pairing jika belum ada session
-    if (!state.creds.registered) {
-        if (!process.env.LOGIN_NUMBER) {
-            console.log("\n❌ Set dulu nomor login: contoh");
-            console.log("LOGIN_NUMBER='628xxxxxx' node post.js\n");
-            process.exit(0);
-        }
-        await loginWithCode(sock);
-    }
-
     sock.ev.on("connection.update", async (update) => {
         const { connection } = update;
+
+        // TRIGGER PAIRING SAAT "connecting"
+        if (!state.creds.registered && connection === "connecting") {
+            if (!process.env.LOGIN_NUMBER) {
+                console.log("\n❌ Set dulu nomor login:");
+                console.log("LOGIN_NUMBER='628xxxxxx' node post.js\n");
+                process.exit(0);
+            }
+            await loginWithCode(sock);
+        }
 
         if (connection === "open") {
             console.log("✅ BOT TERHUBUNG\n");
