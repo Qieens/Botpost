@@ -11,9 +11,9 @@ const fs = require("fs");
 // =============================
 // KONFIGURASI
 // =============================
-const PROMO_FILE = "promo.txt";            // Isi teks promosi
-const DELAY_ANTAR_GRUP = 2000;             // Delay antar grup
-const DELAY_LOOP = 10 * 60 * 1000;         // Delay antar cycle broadcast
+const PROMO_FILE = "promo.txt";
+const DELAY_ANTAR_GRUP = 2000;
+const DELAY_LOOP = 10 * 60 * 1000;
 // =============================
 
 // =============================
@@ -21,6 +21,13 @@ const DELAY_LOOP = 10 * 60 * 1000;         // Delay antar cycle broadcast
 // =============================
 async function loginWithCode(sock) {
     console.log("\n🔑 MEMBUAT KODE LOGIN...");
+
+    // Pastikan socket siap sebelum request pairing
+    while (!sock.ws || sock.ws.readyState !== 1) {
+        console.log("⏳ Menunggu koneksi siap...");
+        await delay(500);
+    }
+
     const code = await sock.requestPairingCode(process.env.LOGIN_NUMBER);
 
     console.log("\n📌 MASUKKAN KODE INI DI WHATSAPP:");
@@ -47,7 +54,6 @@ async function autoLoop(sock) {
             try {
                 await sock.sendMessage(gid, { text: message });
                 console.log(`✔ Terkirim ke: ${groups[gid].subject}`);
-
                 await delay(DELAY_ANTAR_GRUP);
             } catch (err) {
                 console.log(`❌ Gagal kirim ke ${gid}:`, err.message);
@@ -70,28 +76,31 @@ async function startBot() {
         logger: pino({ level: "silent" }),
         auth: state,
         version,
-        printQRInTerminal: false,        // Tidak pakai QR
+        printQRInTerminal: false,
         browser: ["Ubuntu", "Chrome", "110.0"]
     });
 
     sock.ev.on("creds.update", saveCreds);
 
-    // Jika tidak ada session → gunakan pairing code
+    // Pairing jika belum ada session
     if (!state.creds.registered) {
         if (!process.env.LOGIN_NUMBER) {
             console.log("\n❌ Set dulu nomor login: contoh");
-            console.log("LOGIN_NUMBER='628xxxxxx' node bot.js\n");
+            console.log("LOGIN_NUMBER='628xxxxxx' node post.js\n");
             process.exit(0);
         }
         await loginWithCode(sock);
     }
 
     sock.ev.on("connection.update", async (update) => {
-        if (update.connection === "open") {
+        const { connection } = update;
+
+        if (connection === "open") {
             console.log("✅ BOT TERHUBUNG\n");
             setTimeout(() => autoLoop(sock), 2000);
         }
-        if (update.connection === "close") {
+
+        if (connection === "close") {
             console.log("❌ Koneksi terputus. Restarting...");
             setTimeout(startBot, 3000);
         }
