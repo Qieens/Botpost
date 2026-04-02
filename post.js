@@ -1,12 +1,13 @@
-import makeWASocket, {
+const {
+    default: makeWASocket,
     useMultiFileAuthState,
     fetchLatestBaileysVersion,
     delay
-} from "@whiskeysockets/baileys";
+} = require("@whiskeysockets/baileys");
 
-import pino from "pino";
-import fs from "fs";
-import readline from "readline";
+const pino = require("pino");
+const fs = require("fs");
+const readline = require("readline");
 
 // =============================
 // INPUT NOMOR
@@ -21,21 +22,18 @@ function inputNomor() {
     });
 }
 
-// =============================
-// BACA PROMO
-// =============================
 const PROMO_FILE = "promo.txt";
 const DELAY_ANTAR_GRUP = 2000;
 const DELAY_LOOP = 10 * 60 * 1000;
 
 // =============================
-// LOOP BROADCAST
+// AUTOBROADCAST LOOP
 // =============================
 async function autoLoop(sock) {
     while (true) {
         console.log("\n🔁 MEMULAI BROADCAST BARU...");
+        const msg = fs.readFileSync(PROMO_FILE, "utf8").trim();
 
-        const message = fs.readFileSync(PROMO_FILE, "utf8").trim();
         const groups = await sock.groupFetchAllParticipating();
         const groupIds = Object.keys(groups);
 
@@ -43,10 +41,10 @@ async function autoLoop(sock) {
 
         for (let gid of groupIds) {
             try {
-                await sock.sendMessage(gid, { text: message });
+                await sock.sendMessage(gid, { text: msg });
                 console.log(`✔ Terkirim ke: ${groups[gid].subject}`);
-            } catch (err) {
-                console.log(`❌ Gagal kirim ke ${gid}:`, err.message);
+            } catch (e) {
+                console.log(`❌ Gagal kirim ke ${gid}: ${e.message}`);
             }
             await delay(DELAY_ANTAR_GRUP);
         }
@@ -65,19 +63,19 @@ async function startBot() {
     const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
+        logger: pino({ level: "silent" }),
         auth: state,
         version,
         printQRInTerminal: false,
-        browser: ["Chrome", "Linux", "10.15.7"],
+        browser: ["Chrome (Linux)", "", ""],
         syncFullHistory: false,
-        markOnlineOnConnect: false,
-        logger: pino({ level: "silent" }),
+        markOnlineOnConnect: false
     });
 
     sock.ev.on("creds.update", saveCreds);
 
     // =============================
-    // FIX: REQUEST PAIRING CODE HANYA KETIKA CONNECT = OPEN
+    // FIX WAJIB: Pairing code HANYA setelah OPEN
     // =============================
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect } = update;
@@ -94,14 +92,14 @@ async function startBot() {
                 return;
             }
 
-            console.log("✅ BOT TERHUBUNG\n");
-            setTimeout(() => autoLoop(sock), 1000);
+            console.log("✅ BOT TERHUBUNG!");
+            setTimeout(() => autoLoop(sock), 1500);
         }
 
         if (connection === "close") {
-            const reason = lastDisconnect?.error?.output?.statusCode;
-            console.log(`❌ Koneksi terputus: ${reason}`);
-            console.log("🔄 Restarting...\n");
+            const code = lastDisconnect?.error?.output?.statusCode;
+            console.log(`❌ Koneksi terputus: ${code}`);
+            console.log("🔄 Restarting...");
             setTimeout(startBot, 3000);
         }
     });
