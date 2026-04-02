@@ -1,124 +1,78 @@
-const {
-    default: makeWASocket,
-    useMultiFileAuthState,
-    fetchLatestBaileysVersion,
-    delay
-} = require("@whiskeysockets/baileys");
+import makeWASocket from "@whiskeysockets/baileys";
+import { useMultiFileAuthState } from "@whiskeysockets/baileys";
+import readline from "readline";
 
-const pino = require("pino");
-const fs = require("fs");
-const readline = require("readline");
+// Input nomor
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
 
-// =============================
-// KONFIG PROMOSI
-// =============================
-const PROMO_FILE = "promo.txt";
-const DELAY_ANTAR_GRUP = 2000;
-const DELAY_LOOP = 10 * 60 * 1000;
+// Fungsi input
+const ask = (q) => new Promise(resolve => rl.question(q, resolve));
 
-// =============================
-// INPUT NOMOR MANUAL
-// =============================
-function askPhoneNumber() {
-    return new Promise((resolve) => {
-        const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout
-        });
 
-        rl.question("📱 Masukkan nomor WhatsApp (format 628xxxx): ", (answer) => {
-            rl.close();
-            resolve(answer.trim());
-        });
-    });
-}
+// ============================
+//  FUNGSI LOGIN KODE PAIRING
+// ============================
+const loginWithCode = async (number) => {
+    console.log("🔌 Menghubungkan ke WhatsApp...");
 
-// =============================
-// FUNGSI LOGIN PAIRING CODE
-// =============================
-async function loginWithCode(sock, number) {
-    console.log("\n🔑 MEMBUAT KODE LOGIN...");
-
-    const code = await sock.requestPairingCode(number);
-
-    console.log("\n📌 MASUKKAN KODE INI DI WHATSAPP:");
-    console.log("=======================================");
-    console.log(`       🔐  ${code}  🔐`);
-    console.log("=======================================\n");
-}
-
-// =============================
-// AUTO BROADCAST LOOP
-// =============================
-async function autoLoop(sock) {
-    while (true) {
-        console.log("\n🔁 MEMULAI BROADCAST BARU...");
-
-        const message = fs.readFileSync(PROMO_FILE, "utf8").trim();
-        const groups = await sock.groupFetchAllParticipating();
-        const groupIds = Object.keys(groups);
-
-        console.log(`📌 Total grup: ${groupIds.length}`);
-
-        for (let gid of groupIds) {
-            try {
-                await sock.sendMessage(gid, { text: message });
-                console.log(`✔ Terkirim ke: ${groups[gid].subject}`);
-
-                await delay(DELAY_ANTAR_GRUP);
-            } catch (err) {
-                console.log(`❌ Gagal kirim ke ${gid}:`, err.message);
-            }
-        }
-
-        console.log(`⏳ Menunggu ${DELAY_LOOP / 60000} menit...`);
-        await delay(DELAY_LOOP);
-    }
-}
-
-// =============================
-// START BOT
-// =============================
-async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState("./session");
-    const { version } = await fetchLatestBaileysVersion();
-
-    let loginNumber = process.env.LOGIN_NUMBER;
-
-    if (!state.creds.registered) {
-        // ==== INPUT NOMOR ====
-        loginNumber = await askPhoneNumber();
-
-        if (!loginNumber || !loginNumber.startsWith("62")) {
-            console.log("❌ Format nomor salah!");
-            process.exit(0);
-        }
-    }
+    const { state, saveCreds } = await useMultiFileAuthState('./session');
 
     const sock = makeWASocket({
-        logger: pino({ level: "silent" }),
-        auth: state,
-        version,
         printQRInTerminal: false,
-        browser: ["Ubuntu", "Chrome", "110.0"]
+        auth: state,
+        browser: ["Ubuntu", "Chrome", "22.0"],
+        syncFullHistory: false,
     });
+
+    // Tunggu koneksi siap
+    await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject("❌ Timeout menunggu koneksi WhatsApp"), 20000);
+
+        sock.ev.on("connection.update", (update) => {
+            const { connection, lastDisconnect } = update;
+
+            if (connection === "connecting") {
+                console.log("⏳ Menghubungkan...");
+            }
+
+            if (connection === "open") {
+                clearTimeout(timeout);
+                console.log("✅ Koneksi WhatsApp siap.");
+                resolve();
+            }
+
+            if (connection === "close") {
+                reject(lastDisconnect?.error || "❌ Koneksi terputus!");
+            }
+        });
+    });
+
+    console.log("🔑 Meminta kode pairing...");
+    const code = await sock.requestPairingCode(number);
+
+    console.log(`\n📟 *Kode Pairing*: ${code}\n`);
 
     sock.ev.on("creds.update", saveCreds);
 
-    if (!state.creds.registered) {
-        await loginWithCode(sock, loginNumber);
+    return sock;
+};
+
+
+// ============================
+//  START BOT
+// ============================
+const start = async () => {
+    const number = await ask("📱 Masukkan nomor (format 628xxxx): ");
+    rl.close();
+
+    try {
+        await loginWithCode(number);
+    } catch (e) {
+        console.error("\n❌ ERROR:", e);
     }
+};
 
-    sock.ev.on("connection.update", async (update) => {
-        if (update.connection === "open") {
-            console.log("✅ BOT TERHUBUNG\n");
-            setTimeout(() => autoLoop(sock), 2000);
-        }
-        if (update.connection === "close") {
-            console.log("❌ Koneksi terputus. Restarting...");
-            setTimeout(startBot, 3000);
-        }
-    });
-}
-
-startBot();
+start();
