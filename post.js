@@ -40,10 +40,10 @@ async function startLoop(sock) {
 
   while (config.active) {
     try {
-      // PATCH: stop jika socket mati
+      // PATCH 1: Cegah spam "socket belum siap"
       if (!sock || !sock.ws || sock.ws.readyState !== 1) {
-        console.log("⚠️ Socket belum siap, menunggu reconnect...");
-        await delay(3000);
+        console.log("⚠️ Socket belum siap, retry 1 detik...");
+        await delay(1000);
         continue;
       }
 
@@ -60,7 +60,7 @@ async function startLoop(sock) {
       for (let id of ids) {
         if (!config.active) break;
 
-        // PATCH: cek socket setiap iterasi
+        // PATCH 2: stop langsung saat disconnect
         if (!sock || !sock.ws || sock.ws.readyState !== 1) {
           console.log("⚠️ Socket terputus saat loop. Menunggu reconnect...");
           break;
@@ -195,10 +195,11 @@ async function startBot() {
 
   // ================= CONNECTION =================
   sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
+
     if (connection === "open") {
       console.log("✅ Connected");
 
-      // PATCH: hanya jalankan loop jika ON dan tidak looping
+      // PATCH 3: loop auto-continue setelah reconnect
       if (config.active && !isLooping) startLoop(sock);
     }
 
@@ -206,12 +207,12 @@ async function startBot() {
       const reason = lastDisconnect?.error?.output?.statusCode;
       console.log("❌ Disconnect:", reason);
 
-      // PATCH: stop loop agar tidak spam
-      config.active = config.active; // tidak diubah user
       isLooping = false;
 
+      // 515 dan 401 → auto reconnect
       if (reason !== DisconnectReason.loggedOut) {
-        setTimeout(startBot, 3000);
+        console.log("🔁 Reconnecting...");
+        setTimeout(startBot, 2000);
       }
     }
   });
